@@ -1,4 +1,4 @@
-# Fitboard Current Functionality Spec
+# endupro Current Functionality Spec
 
 ## App + Storage
 - Local single-user web app served by `server.js` (Node HTTP server), no external DB.

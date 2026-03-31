@@ -1,4 +1,4 @@
-# Fitboard
+# endupro
 
 Local personal dashboard for endurance running data.
 

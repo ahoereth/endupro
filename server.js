@@ -1043,7 +1043,7 @@ async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
         const shortBody = body.length > 200 ? `${body.slice(0, 200)}...` : body;
         const retryable = isRetryableStatus(response.status);
         console.error(
-          `[fitboard] ${endpoint} failed (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
+          `[endupro] ${endpoint} failed (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
             ` status=${response.status} retryable=${retryable} target=${activityId} body=${shortBody || response.statusText}`
         );
         lastError = new Error(
@@ -1065,7 +1065,7 @@ async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       console.error(
-        `[fitboard] ${endpoint} request error (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
+        `[endupro] ${endpoint} request error (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
           ` target=${activityId}: ${lastError.message}`
       );
       if (attempt >= ACTIVITY_FETCH_MAX_RETRIES) {
@@ -2104,22 +2104,22 @@ async function handleApi(req, res, url) {
           if (fetchedZones.length) {
             hrZonesRunning = fetchedZones;
             console.log(
-              `[fitboard] athlete HR zones rebuilt from running LTHR ${runningThresholdHr}: ${fetchedZones
+              `[endupro] athlete HR zones rebuilt from running LTHR ${runningThresholdHr}: ${fetchedZones
                 .map((zone) => `${zone.label}:${zone.minBpm}-${zone.maxBpm ?? "+"}`)
                 .join(", ")}`
             );
           } else {
             console.error(
-              `[fitboard] athlete profile fetched but running threshold HR was unavailable or invalid.` +
+              `[endupro] athlete profile fetched but running threshold HR was unavailable or invalid.` +
                 ` runningThresholdHr=${runningThresholdHr ?? "n/a"}`
             );
           }
         } else {
-          console.error("[fitboard] athlete profile endpoint unsupported (404). Running HR zones not updated.");
+          console.error("[endupro] athlete profile endpoint unsupported (404). Running HR zones not updated.");
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[fitboard] athlete profile fetch failed. Running HR zones not updated: ${message}`);
+        console.error(`[endupro] athlete profile fetch failed. Running HR zones not updated: ${message}`);
         // Keep previous zones when athlete profile fetch fails.
       }
       const payload = {
@@ -2392,7 +2392,7 @@ async function start() {
   });
 
   server.listen(PORT, HOST, () => {
-    console.log(`Fitboard running at http://${HOST}:${PORT}`);
+    console.log(`endupro running at http://${HOST}:${PORT}`);
   });
 }
 

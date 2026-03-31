@@ -187,6 +187,33 @@ body.has-mobile-panel-open {
   color: #16322d;
 }
 
+.hero-logo {
+  position: relative;
+  display: block;
+  width: fit-content;
+  margin: 12px 0 0;
+  font-family: "Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(2.25rem, 4.6vw, 3.5rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.9;
+  text-transform: lowercase;
+  color: #0f4f46;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.hero-logo::after {
+  content: "";
+  position: absolute;
+  left: 0.08em;
+  right: 0.08em;
+  bottom: -0.14em;
+  height: 0.12em;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0f766e, #38b2a2 62%, #9ddbd2);
+  opacity: 0.85;
+}
+
 .hero-top {
   display: flex;
   align-items: start;

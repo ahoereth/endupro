@@ -1,8 +1,8 @@
 {
-  "name": "fitboard",
+  "name": "endupro",
   "version": "0.1.0",
   "private": true,
-  "description": "Local personal fitness dashboard powered by Intervals.icu",
+  "description": "Endurance progress tracker powered by Intervals.icu",
   "scripts": {
     "start": "FITBOARD_DEV_LIVE_RELOAD=1 node --watch --watch-path=server.js --watch-path=public server.js",
     "start:server": "node server.js"
