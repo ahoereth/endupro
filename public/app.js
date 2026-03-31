@@ -6,6 +6,10 @@ const recentActivitiesListEl = document.getElementById("recent-activities-list")
 const recentActivitiesCountEl = document.getElementById("recent-activities-count");
 const recentActivitiesEmptyEl = document.getElementById("recent-activities-empty");
 const recentActivitiesSearchEl = document.getElementById("recent-activities-search");
+const leftColumnEl = document.getElementById("left-column");
+const mobileLeftDrawerToggleEl = document.getElementById("mobile-left-drawer-toggle");
+const mobileLeftDrawerCloseEl = document.getElementById("mobile-left-drawer-close");
+const mobileLeftDrawerBackdropEl = document.getElementById("mobile-left-drawer-backdrop");
 const appGridEl = document.getElementById("app-grid");
 const latestValuesEl = document.getElementById("latest-values");
 const chartRootEl = document.getElementById("chart-root");
@@ -26,14 +30,22 @@ const paceAxisLabelEl = document.getElementById("pace-axis-label");
 const settingsFormEl = document.getElementById("settings-form");
 const apiKeyEl = document.getElementById("api-key");
 const apiKeyStateEl = document.getElementById("api-key-state");
+const hrZoneOverridesFormEl = document.getElementById("hr-zone-overrides-form");
+const hrZoneOverridesRootEl = document.getElementById("hr-zone-overrides-root");
+const hrZoneOverridesResetEl = document.getElementById("hr-zone-overrides-reset");
+const hrZoneOverridesStateEl = document.getElementById("hr-zone-overrides-state");
+const hrZoneSettingsSummaryEl = document.getElementById("hr-zone-settings-summary");
+const fetchAllButtonEl = document.getElementById("fetch-all-button");
 const syncButtonEl = document.getElementById("sync-button");
-const syncRangeButtonEl = document.getElementById("sync-range-button");
-const lookbackDaysEl = document.getElementById("lookback-days");
+const clearActivityDataButtonEl = document.getElementById("clear-activity-data-button");
+const deleteAllDataButtonEl = document.getElementById("delete-all-data-button");
 const scrubControlsEl = document.getElementById("scrub-controls");
 const scrubStartEl = document.getElementById("timeline-start");
 const scrubEndEl = document.getElementById("timeline-end");
 const scrubFillEl = document.getElementById("timeline-range-fill");
 const scrubLabelEl = document.getElementById("scrub-label");
+const timelineRangeSummaryEl = document.getElementById("timeline-range-summary");
+const timelineRangeWarningEl = document.getElementById("timeline-range-warning");
 const timelinePresetButtons = Array.from(document.querySelectorAll(".timeline-preset-button"));
 const tolerancePanelEl = document.getElementById("tolerance-panel");
 const toleranceBadgeEl = document.getElementById("tolerance-badge");
@@ -45,10 +57,13 @@ const foundationalStatsRootEl = document.getElementById("foundational-stats-root
 const monotonyVizEl = document.getElementById("monotony-viz");
 const monotonyValueEl = document.getElementById("monotony-value");
 const monotonyMarkerEl = document.getElementById("monotony-marker");
+const monotonyTooltipEl = document.getElementById("monotony-tooltip");
 const activityDetailOverlayEl = document.getElementById("activity-detail-overlay");
 const activityDetailTitleEl = document.getElementById("activity-detail-title");
 const activityDetailCloseEl = document.getElementById("activity-detail-close");
 const activityDetailContentEl = document.getElementById("activity-detail-content");
+const resyncNoticeEl = document.getElementById("resync-notice");
+const resyncNoticeTextEl = document.getElementById("resync-notice-text");
 
 const VISIBLE_LINES_STORAGE_KEY = "fitboard_visible_lines";
 const EXTRA_LINES_STORAGE_KEY = "fitboard_extra_lines";
@@ -118,6 +133,7 @@ let viewEndIndex = null;
 let followLatest = true;
 let hasStoredApiKey = false;
 let showRampCapLine = true;
+let showRunBars = true;
 let scrubWindowDrag = null;
 let paceAxisBoundMin = null;
 let paceAxisBoundMax = null;
@@ -136,6 +152,12 @@ let heatmapColorRangeMin = null;
 let heatmapColorRangeMax = null;
 let pendingViewRange = null;
 let latestRunsData = [];
+let latestHrZonesRunning = [];
+let latestDefaultHrZonesRunning = [];
+let latestHrZonesRunningOverride = [];
+let latestRunningThresholdHr = null;
+let latestDefaultRunningThresholdHr = null;
+let latestRunningThresholdHrOverride = null;
 const selectedActivityIds = new Set();
 let selectionAnchorActivityId = null;
 let latestRecentActivityIds = [];
@@ -148,8 +170,82 @@ let activityDetailRequestSerial = 0;
 let recentActivitiesSearchQuery = "";
 let pendingDevReloadSnapshot = null;
 let devReloadCurrentToken = null;
-let hadDevReloadSnapshot = false;
 let pendingUrlActivityId = null;
+let syncInProgress = false;
+let latestSeriesNoticeData = null;
+
+function setSyncControlsDisabled(disabled) {
+  const next = Boolean(disabled);
+  if (fetchAllButtonEl) {
+    fetchAllButtonEl.disabled = next;
+  }
+  if (syncButtonEl) {
+    syncButtonEl.disabled = next;
+  }
+}
+
+function setResetControlsDisabled(disabled) {
+  const next = Boolean(disabled);
+  if (clearActivityDataButtonEl) {
+    clearActivityDataButtonEl.disabled = next;
+  }
+  if (deleteAllDataButtonEl) {
+    deleteAllDataButtonEl.disabled = next;
+  }
+}
+
+function renderResyncNotice(data) {
+  if (!resyncNoticeEl || !resyncNoticeTextEl) {
+    return;
+  }
+  if (syncInProgress) {
+    resyncNoticeEl.hidden = true;
+    return;
+  }
+
+  const staleCount = Number(data?.staleActivityMetaCount);
+  const requiredVersion = Number(data?.activityMetaSourceVersion);
+  const activityCount = Number(data?.activityCount);
+  const resyncNeeded = data?.resyncNeeded === true;
+  const hrZonesMissing = data?.hrZonesMissing === true;
+  const shouldShow =
+    hasStoredApiKey &&
+    Number.isFinite(activityCount) &&
+    activityCount > 0 &&
+    resyncNeeded &&
+    Number.isFinite(requiredVersion) &&
+    requiredVersion > 0;
+
+  if (!shouldShow) {
+    resyncNoticeEl.hidden = true;
+    resyncNoticeTextEl.textContent = "";
+    return;
+  }
+
+  const staleMessage =
+    Number.isFinite(staleCount) && staleCount > 0
+      ? `${Math.round(staleCount)} synced ${staleCount === 1 ? "activity needs" : "activities need"} metadata refresh`
+      : "";
+  const zonesMessage = hrZonesMissing ? "running threshold-based HR zones are missing" : "";
+  const combinedReason = [staleMessage, zonesMessage].filter(Boolean).join(", and ");
+  const message = `${combinedReason || "Synced data is outdated"}; run Update or Reload All to refresh data from Intervals.icu.`;
+  if (!message.trim()) {
+    resyncNoticeTextEl.textContent = "";
+    resyncNoticeEl.hidden = true;
+    return;
+  }
+  resyncNoticeTextEl.textContent = message;
+  resyncNoticeEl.hidden = false;
+}
+
+function updateFetchAllButtonLabel(activityCount) {
+  if (!fetchAllButtonEl) {
+    return;
+  }
+
+  const count = Number(activityCount);
+  fetchAllButtonEl.textContent = Number.isFinite(count) && count > 0 ? "Reload All" : "Fetch All";
+}
 
 function setStatus(message) {
   statusEl.textContent = message;
@@ -173,6 +269,30 @@ function isActivityDetailOpen() {
   return Boolean(activityDetailOverlayEl?.classList.contains("is-open"));
 }
 
+function isMobilePanelsLayout() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 1080px)").matches;
+}
+
+function syncMobilePanelBodyState() {
+  const hasOpenMobilePanel =
+    isMobilePanelsLayout() && (Boolean(leftColumnEl?.classList.contains("is-mobile-open")) || isActivityDetailOpen());
+  document.body.classList.toggle("has-mobile-panel-open", hasOpenMobilePanel);
+}
+
+function setMobileLeftDrawerOpen(open) {
+  const shouldOpen = Boolean(open) && isMobilePanelsLayout();
+  if (leftColumnEl) {
+    leftColumnEl.classList.toggle("is-mobile-open", shouldOpen);
+  }
+  if (mobileLeftDrawerBackdropEl) {
+    mobileLeftDrawerBackdropEl.classList.toggle("is-open", shouldOpen);
+  }
+  if (mobileLeftDrawerToggleEl) {
+    mobileLeftDrawerToggleEl.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  }
+  syncMobilePanelBodyState();
+}
+
 function setActivityDetailOpenState(open) {
   const shouldOpen = Boolean(open);
   if (activityDetailOverlayEl) {
@@ -182,6 +302,10 @@ function setActivityDetailOpenState(open) {
   if (appGridEl) {
     appGridEl.classList.toggle("is-detail-open", shouldOpen);
   }
+  if (shouldOpen && isMobilePanelsLayout()) {
+    setMobileLeftDrawerOpen(false);
+  }
+  syncMobilePanelBodyState();
 }
 
 function readActivityIdFromUrl() {
@@ -338,10 +462,6 @@ function persistActivityDetailViewState() {
 }
 
 async function restoreActivityDetailFromUrlState() {
-  if (hadDevReloadSnapshot) {
-    pendingUrlActivityId = null;
-    return;
-  }
   if (!activityDetailOverlayEl || !activityDetailContentEl || isActivityDetailOpen()) {
     pendingUrlActivityId = null;
     return;
@@ -952,8 +1072,11 @@ function handleRecentActivitySelection(activityId, options = {}) {
   } else {
     renderRecentActivities({ runs: latestRunsData });
   }
+  const detailPaneWasOpen = isActivityDetailOpen();
   persistActivityDetailViewState();
-  void syncActivityDetailPanelToSelection();
+  if (detailPaneWasOpen) {
+    void syncActivityDetailPanelToSelection();
+  }
 }
 
 function selectOnlyActivity(activityId, options = {}) {
@@ -1073,6 +1196,10 @@ function renderActivityDetailPayload(payload) {
   const baseline = payload.baselineContext && typeof payload.baselineContext === "object" ? payload.baselineContext : {};
   const intervalPoints = Array.isArray(payload.intervalPoints) ? payload.intervalPoints : [];
   const splitKmPoints = Array.isArray(payload.splitKmPoints) ? payload.splitKmPoints : [];
+  const detailStreamPoints = Array.isArray(payload.detailStreamPoints) ? payload.detailStreamPoints : [];
+  const avgHrText = Number.isFinite(Number(summary.avgHrBpm)) ? `${Number(summary.avgHrBpm).toFixed(0)} avg` : null;
+  const maxHrText = Number.isFinite(Number(summary.maxHrBpm)) ? `${Number(summary.maxHrBpm).toFixed(0)} max` : null;
+  const hrSummaryText = [avgHrText, maxHrText].filter(Boolean).join(" / ") || "n/a";
   const baselineStatusClass = baselineStatusClassFromApi(baseline.status);
   const baselineStatusLabel =
     baseline.status === "n/a" || !baseline.status
@@ -1154,7 +1281,6 @@ function renderActivityDetailPayload(payload) {
 
   activityDetailContentEl.innerHTML = `
     <section class="activity-detail-summary">
-      <h3 class="activity-detail-title">${escapeHtml(titleName)}</h3>
       <p class="activity-detail-subtitle">${escapeHtml(titleDate)}</p>
       ${intervalsActivityLink}
       <div class="activity-detail-grid">
@@ -1171,10 +1297,8 @@ function renderActivityDetailPayload(payload) {
           <span class="activity-detail-metric-value">${formatPace(Number(summary.paceMinKm))}</span>
         </div>
         <div class="activity-detail-metric">
-          <span class="activity-detail-metric-label">Avg HR</span>
-          <span class="activity-detail-metric-value">${
-            Number.isFinite(Number(summary.avgHrBpm)) ? `${Number(summary.avgHrBpm).toFixed(0)} bpm` : "n/a"
-          }</span>
+          <span class="activity-detail-metric-label">HR</span>
+          <span class="activity-detail-metric-value">${hrSummaryText}</span>
         </div>
         <div class="activity-detail-metric">
           <span class="activity-detail-metric-label">Elevation Gain</span>
@@ -1183,10 +1307,15 @@ function renderActivityDetailPayload(payload) {
           }</span>
         </div>
         <div class="activity-detail-metric">
-          <span class="activity-detail-metric-label">Avg Temp</span>
-          <span class="activity-detail-metric-value">${formatTemperatureC(summary.avgTempC)}</span>
+          <span class="activity-detail-metric-label">Load</span>
+          <span class="activity-detail-metric-value">${formatLoad(summary.load)}</span>
         </div>
       </div>
+    </section>
+    <section class="activity-detail-section">
+      <h3>Run Trace</h3>
+      <p class="activity-detail-stream-note">Elapsed time on the x-axis. Separate rows show pace, heart rate, cadence, and altitude from the recorded activity stream.</p>
+      <div id="activity-detail-stream-chart"></div>
     </section>
     <section class="activity-detail-section">
       <h3>Baseline Context (${escapeHtml(String(baseline.date || "n/a"))})</h3>
@@ -1210,6 +1339,7 @@ function renderActivityDetailPayload(payload) {
       ${splitKmDetailsBlock}
     </section>
   `;
+  drawActivityDetailStreamChart(detailStreamPoints);
 }
 
 async function fetchActivityDetail(activityId) {
@@ -1649,6 +1779,364 @@ function formatTemperatureC(value) {
   return `${n.toFixed(1)} C`;
 }
 
+function formatLoad(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    return "n/a";
+  }
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
+function formatDurationCompact(valueSec) {
+  const totalSeconds = Number(valueSec);
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return "0m";
+  }
+  const rounded = Math.round(totalSeconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
+}
+
+function formatCadence(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) {
+    return "n/a";
+  }
+  return `${n.toFixed(0)} spm`;
+}
+
+function formatAltitude(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return "n/a";
+  }
+  return `${n.toFixed(0)} m`;
+}
+
+function formatElapsedTimeLabel(value) {
+  const totalSeconds = Number(value);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return "n/a";
+  }
+
+  const rounded = Math.round(totalSeconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const seconds = rounded % 60;
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function buildLinePath(points, xScale, yScale, valueKey) {
+  let path = "";
+  let drawing = false;
+  for (const point of points) {
+    const rawValue = point?.[valueKey];
+    if (rawValue === null || rawValue === undefined || rawValue === "") {
+      drawing = false;
+      continue;
+    }
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) {
+      drawing = false;
+      continue;
+    }
+    const command = drawing ? "L" : "M";
+    path += `${command}${xScale(Number(point.elapsedSec)).toFixed(2)},${yScale(value).toFixed(2)} `;
+    drawing = true;
+  }
+  return path.trim();
+}
+
+function findClosestDetailStreamIndex(points, elapsedSec) {
+  if (!Array.isArray(points) || !points.length) {
+    return -1;
+  }
+
+  let low = 0;
+  let high = points.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (Number(points[mid]?.elapsedSec) < elapsedSec) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  const candidate = low;
+  const previous = Math.max(0, candidate - 1);
+  const candidateDiff = Math.abs(Number(points[candidate]?.elapsedSec) - elapsedSec);
+  const previousDiff = Math.abs(Number(points[previous]?.elapsedSec) - elapsedSec);
+  return previousDiff <= candidateDiff ? previous : candidate;
+}
+
+function drawActivityDetailStreamChart(points) {
+  const root = activityDetailContentEl?.querySelector("#activity-detail-stream-chart");
+  if (!root) {
+    return;
+  }
+
+  const chartPoints = Array.isArray(points)
+    ? points.map((point) => ({
+        ...point,
+        pacePlotMinKm:
+          point?.paceMinKm === null || point?.paceMinKm === undefined || point?.paceMinKm === ""
+            ? null
+            : Number.isFinite(Number(point?.paceMinKm))
+              ? Number(point.paceMinKm)
+              : null
+      }))
+    : [];
+  for (let i = 1; i < chartPoints.length; i += 1) {
+    const prev = chartPoints[i - 1];
+    const cur = chartPoints[i];
+    const prevElapsed = Number(prev?.elapsedSec);
+    const curElapsed = Number(cur?.elapsedSec);
+    const prevDistance = Number(prev?.distanceKm);
+    const curDistance = Number(cur?.distanceKm);
+    const dt = curElapsed - prevElapsed;
+    const ddKm = curDistance - prevDistance;
+    if (!Number.isFinite(dt) || !Number.isFinite(ddKm) || dt <= 0 || ddKm <= 0.001) {
+      continue;
+    }
+    const derivedPace = dt / 60 / ddKm;
+    if (Number.isFinite(derivedPace) && derivedPace >= 2 && derivedPace <= 30) {
+      chartPoints[i].pacePlotMinKm = derivedPace;
+    }
+  }
+  for (let i = 0; i < chartPoints.length; i += 1) {
+    if (Number.isFinite(Number(chartPoints[i]?.pacePlotMinKm))) {
+      continue;
+    }
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(0, i - 2); j <= Math.min(chartPoints.length - 1, i + 2); j += 1) {
+      const pace = Number(chartPoints[j]?.pacePlotMinKm);
+      if (!Number.isFinite(pace) || pace < 2 || pace > 30) {
+        continue;
+      }
+      sum += pace;
+      count += 1;
+    }
+    chartPoints[i].pacePlotMinKm = count ? sum / count : null;
+  }
+
+  const seriesMeta = [
+    {
+      key: "pacePlotMinKm",
+      label: "Pace",
+      color: "#0f766e",
+      format: formatPace,
+      invert: true
+    },
+    {
+      key: "hrBpm",
+      label: "HR",
+      color: "#dc2626",
+      format: (value) => (Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} bpm` : "n/a"),
+      invert: false
+    },
+    {
+      key: "cadenceSpm",
+      label: "Cadence",
+      color: "#7c3aed",
+      format: formatCadence,
+      invert: false
+    },
+    {
+      key: "altitudeM",
+      label: "Altitude",
+      color: "#2563eb",
+      format: formatAltitude,
+      invert: false
+    }
+  ];
+
+  const availableSeries = seriesMeta
+    .map((meta) => ({
+      ...meta,
+      values: chartPoints
+        .map((point) => {
+          const rawValue = point?.[meta.key];
+          if (rawValue === null || rawValue === undefined || rawValue === "") {
+            return null;
+          }
+          const value = Number(rawValue);
+          return Number.isFinite(value) ? value : null;
+        })
+        .filter((value) => Number.isFinite(value))
+    }))
+    .filter((meta) => meta.values.length);
+
+  if (!availableSeries.length) {
+    root.innerHTML = `<p class="field-hint">Detailed run streams are not available for this activity.</p>`;
+    return;
+  }
+
+  const width = 640;
+  const margin = { top: 12, right: 14, bottom: 28, left: 54 };
+  const panelHeight = 74;
+  const panelGap = 16;
+  const innerW = width - margin.left - margin.right;
+  const height = margin.top + margin.bottom + availableSeries.length * panelHeight + Math.max(0, availableSeries.length - 1) * panelGap;
+  const maxElapsed = Math.max(...points.map((point) => Number(point?.elapsedSec)).filter((value) => Number.isFinite(value)));
+  const xScale = (elapsedSec) => margin.left + (innerW * elapsedSec) / Math.max(1, maxElapsed);
+  const panelDomainByKey = new Map();
+
+  function buildYScale(values, top, invert) {
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const span = Math.max(max - min, invert ? 0.2 : 1);
+    const pad = span * 0.1;
+    const domainMin = invert ? max + pad : min - pad;
+    const domainMax = invert ? Math.max(0.1, min - pad) : max + pad;
+    return (value) => {
+      const denom = domainMax - domainMin;
+      const safeDenom = Math.abs(denom) < 0.0001 ? (denom < 0 ? -0.0001 : 0.0001) : denom;
+      const t = (value - domainMin) / safeDenom;
+      return top + panelHeight - t * panelHeight;
+    };
+  }
+
+  const seriesBlocks = availableSeries
+    .map((meta, index) => {
+      const top = margin.top + index * (panelHeight + panelGap);
+      const yScale = buildYScale(meta.values, top, meta.invert);
+      panelDomainByKey.set(meta.key, { top, yScale });
+      const midValue = meta.values.length ? meta.values[Math.floor(meta.values.length / 2)] : null;
+      const path = buildLinePath(chartPoints, xScale, yScale, meta.key);
+      const gridLines = [0, 0.5, 1]
+        .map((ratio) => {
+          const y = top + panelHeight * ratio;
+          return `<line x1="${margin.left}" y1="${y.toFixed(2)}" x2="${(width - margin.right).toFixed(
+            2
+          )}" y2="${y.toFixed(2)}" stroke="#e3eeea" stroke-width="1" />`;
+        })
+        .join("");
+      const axisLabel = Number.isFinite(midValue) ? meta.format(midValue) : meta.label;
+      return `
+        <g data-series="${meta.key}">
+          ${gridLines}
+          <text x="8" y="${(top + 14).toFixed(2)}" class="activity-detail-stream-label">${escapeHtml(meta.label)}</text>
+          <text x="8" y="${(top + panelHeight - 4).toFixed(2)}" class="activity-detail-stream-axis">${escapeHtml(axisLabel)}</text>
+          <path d="${path}" fill="none" stroke="${meta.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </g>
+      `;
+    })
+    .join("");
+
+  const tickCount = Math.min(6, Math.max(3, Math.round(innerW / 120)));
+  const xTicks = Array.from({ length: tickCount }, (_, index) => {
+    const ratio = tickCount === 1 ? 0 : index / (tickCount - 1);
+    const elapsed = maxElapsed * ratio;
+    const x = xScale(elapsed);
+    return `
+      <g>
+        <line x1="${x.toFixed(2)}" y1="${margin.top}" x2="${x.toFixed(2)}" y2="${(height - margin.bottom).toFixed(
+          2
+        )}" stroke="#eef4f2" stroke-width="1" />
+        <text x="${x.toFixed(2)}" y="${(height - 8).toFixed(2)}" text-anchor="middle" class="activity-detail-stream-axis">${escapeHtml(
+          formatElapsedTimeLabel(elapsed)
+        )}</text>
+      </g>
+    `;
+  }).join("");
+
+  root.innerHTML = `
+    <div class="activity-detail-stream-wrap">
+      <svg viewBox="0 0 ${width} ${height}" class="activity-detail-stream-svg" role="img" aria-label="Run pace, heart rate, cadence, and altitude over time">
+        ${xTicks}
+        ${seriesBlocks}
+        <line id="activity-detail-stream-hover" x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${(
+          height - margin.bottom
+        ).toFixed(2)}" stroke="#0f172a" stroke-width="1" stroke-dasharray="4 4" hidden />
+        <rect id="activity-detail-stream-capture" x="${margin.left}" y="${margin.top}" width="${innerW}" height="${
+    height - margin.top - margin.bottom
+  }" fill="transparent" />
+      </svg>
+      <div id="activity-detail-stream-tooltip" class="chart-tooltip activity-detail-stream-tooltip" hidden></div>
+    </div>
+  `;
+
+  const wrap = root.querySelector(".activity-detail-stream-wrap");
+  const svgEl = root.querySelector("svg");
+  const capture = root.querySelector("#activity-detail-stream-capture");
+  const hoverLine = root.querySelector("#activity-detail-stream-hover");
+  const tooltip = root.querySelector("#activity-detail-stream-tooltip");
+  if (!wrap || !svgEl || !capture || !hoverLine || !tooltip) {
+    return;
+  }
+
+  function clearHover() {
+    hoverLine.setAttribute("hidden", "");
+    tooltip.setAttribute("hidden", "");
+  }
+
+  function showHover(point, event) {
+    const x = xScale(Number(point.elapsedSec));
+    hoverLine.setAttribute("x1", x.toFixed(2));
+    hoverLine.setAttribute("x2", x.toFixed(2));
+    hoverLine.removeAttribute("hidden");
+    tooltip.innerHTML = `
+      <strong>${escapeHtml(formatElapsedTimeLabel(point.elapsedSec))}</strong><br/>
+      Distance: ${escapeHtml(formatDistance(Number(point.distanceKm || 0)))}<br/>
+      ${availableSeries.map((meta) => `${escapeHtml(meta.label)}: ${escapeHtml(meta.format(point[meta.key]))}`).join("<br/>")}
+    `;
+    tooltip.removeAttribute("hidden");
+
+    const svgRect = svgEl.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    const pointerX = Number.isFinite(event?.clientX) ? event.clientX - wrapRect.left : (x / width) * svgRect.width + (svgRect.left - wrapRect.left);
+    const pointerY = Number.isFinite(event?.clientY) ? event.clientY - wrapRect.top : 0;
+    const tooltipWidth = tooltip.offsetWidth || 220;
+    const tooltipHeight = tooltip.offsetHeight || 120;
+    const horizontalPadding = 8;
+    const verticalPadding = 8;
+    const targetLeft =
+      pointerX <= wrapRect.width / 2 ? wrapRect.width - tooltipWidth - horizontalPadding : horizontalPadding;
+    const targetTop =
+      pointerY <= wrapRect.height / 2 ? wrapRect.height - tooltipHeight - verticalPadding : verticalPadding;
+    const clampedLeft = Math.min(
+      Math.max(horizontalPadding, wrapRect.width - tooltipWidth - horizontalPadding),
+      Math.max(horizontalPadding, targetLeft)
+    );
+    const clampedTop = Math.min(
+      Math.max(verticalPadding, wrapRect.height - tooltipHeight - verticalPadding),
+      Math.max(verticalPadding, targetTop)
+    );
+    tooltip.style.left = `${clampedLeft}px`;
+    tooltip.style.top = `${clampedTop}px`;
+  }
+
+  function moveHover(event) {
+    const rect = svgEl.getBoundingClientRect();
+    if (!rect.width) {
+      return;
+    }
+    const xInSvg = ((event.clientX - rect.left) / rect.width) * width;
+    const clamped = Math.min(width - margin.right, Math.max(margin.left, xInSvg));
+    const elapsed = ((clamped - margin.left) / Math.max(1, innerW)) * maxElapsed;
+    const index = findClosestDetailStreamIndex(chartPoints, elapsed);
+    if (index < 0) {
+      clearHover();
+      return;
+    }
+    showHover(chartPoints[index], event);
+  }
+
+  capture.addEventListener("pointermove", moveHover);
+  capture.addEventListener("pointerenter", moveHover);
+  capture.addEventListener("pointerleave", clearHover);
+  capture.addEventListener("pointercancel", clearHover);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -1777,13 +2265,14 @@ function renderDistributionBlock(title, distribution) {
     .map((row) => {
       const widthPct = maxCount > 0 ? (row.count / maxCount) * 100 : 0;
       const pctText = total > 0 ? formatPct(row.count / total) : "0.0%";
+      const valueLabel = typeof row.valueLabel === "string" && row.valueLabel.trim() ? row.valueLabel.trim() : String(row.count);
       return `
         <div class="foundation-row">
           <span class="foundation-label">${escapeHtml(row.label)}</span>
           <div class="foundation-bar-track">
             <div class="foundation-bar" style="width:${widthPct.toFixed(1)}%;"></div>
           </div>
-          <span class="foundation-value">${row.count} (${pctText})</span>
+          <span class="foundation-value">${escapeHtml(valueLabel)} (${pctText})</span>
         </div>
       `;
     })
@@ -1795,6 +2284,47 @@ function renderDistributionBlock(title, distribution) {
       ${rowsHtml || `<p class="field-hint">No data.</p>`}
     </section>
   `;
+}
+
+function buildHrZoneTimeDistribution(runsInRange, hrZonesRunning) {
+  if (!Array.isArray(hrZonesRunning) || !hrZonesRunning.length) {
+    return {
+      total: 0,
+      rows: [],
+      available: false
+    };
+  }
+
+  const zoneTotals = Array.from({ length: hrZonesRunning.length }, () => 0);
+  for (const run of runsInRange) {
+    const durations = Array.isArray(run?.hrZoneDurationsSec) ? run.hrZoneDurationsSec : [];
+    for (let i = 0; i < zoneTotals.length; i += 1) {
+      const sec = Number(durations[i]);
+      if (Number.isFinite(sec) && sec > 0) {
+        zoneTotals[i] += sec;
+      }
+    }
+  }
+  const total = zoneTotals.reduce((sum, value) => sum + value, 0);
+  return {
+    total,
+    rows: hrZonesRunning.map((zone, idx) => {
+      const minBpm = Number(zone?.minBpm);
+      const hasFiniteMax = zone?.maxBpm !== null && zone?.maxBpm !== undefined && zone?.maxBpm !== "";
+      const maxBpm = hasFiniteMax ? Number(zone?.maxBpm) : null;
+      const rangeText = Number.isFinite(maxBpm)
+        ? `${Number.isFinite(minBpm) ? `${Math.round(minBpm)}-` : "<"}${Math.round(maxBpm)}`
+        : Number.isFinite(minBpm)
+          ? `>=${Math.round(minBpm)}`
+          : "open";
+      return {
+        label: `${zone?.label || `Z${idx + 1}`} (${rangeText})`,
+        count: Math.round(zoneTotals[idx] || 0),
+        valueLabel: formatDurationCompact(zoneTotals[idx] || 0)
+      };
+    }),
+    available: true
+  };
 }
 
 function renderFoundationalStats(rangeStartDate, rangeEndDate) {
@@ -1893,6 +2423,10 @@ function renderFoundationalStats(rangeStartDate, rangeEndDate) {
   ]);
   const daytimeDistribution = buildCategoricalDistribution(["Night", "Morning", "Afternoon", "Evening"], daytimeIndices, 4);
   const weekdayDistribution = buildCategoricalDistribution(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], weekdayIndices, 7);
+  const hrZoneDistribution = buildHrZoneTimeDistribution(runsInRange, latestHrZonesRunning);
+  const hrZoneTitle = Number.isFinite(Number(latestRunningThresholdHr))
+    ? `Time in HR zones (LTHR ${Math.round(Number(latestRunningThresholdHr))} bpm)`
+    : "Time in HR zones";
 
   const totalDistance = distancesKm.reduce((sum, value) => sum + value, 0);
   const medianDistance = median(distancesKm);
@@ -1910,6 +2444,18 @@ function renderFoundationalStats(rangeStartDate, rangeEndDate) {
       ${renderDistributionBlock("Start time of day", daytimeDistribution)}
       ${renderDistributionBlock("Weekday", weekdayDistribution)}
       ${renderDistributionBlock("Duration", durationDistribution)}
+      ${
+        hrZoneDistribution.available
+          ? renderDistributionBlock(hrZoneTitle, hrZoneDistribution)
+          : `<section class="foundation-block">
+              <h3 class="foundation-title">${escapeHtml(hrZoneTitle)}</h3>
+              <p class="field-hint">${
+                hasStoredApiKey
+                  ? "Running threshold-based HR zones are missing. Use the connection box update/resync flow to fetch running threshold HR from Intervals.icu."
+                  : "Running threshold-based HR zones are unavailable. Add an API key and sync to fetch running threshold HR from Intervals.icu."
+              }</p>
+            </section>`
+      }
     </div>
   `;
 }
@@ -3650,6 +4196,36 @@ function calculateMonotonySummary(series, endIndex) {
   };
 }
 
+function monotonyInterpretationText(monotony) {
+  if (!monotony || typeof monotony !== "object") {
+    return "Monotony = 7d mean daily load / 7d standard deviation. Lower usually means more day-to-day variation.";
+  }
+  const base = `Monotony: ${monotony.displayValue} (${monotony.label}). Monotony = 7d mean daily load / 7d standard deviation.`;
+  if (monotony.status === "green") {
+    return `${base} Low (<1.5): generally healthy variation.`;
+  }
+  if (monotony.status === "yellow") {
+    return `${base} Moderate (1.5-2.0): monitor for too many similar days.`;
+  }
+  return `${base} High (>2.0): very repetitive loading; consider adding easier/harder contrast.`;
+}
+
+function hideMonotonyTooltip() {
+  if (monotonyTooltipEl) {
+    monotonyTooltipEl.hidden = true;
+  }
+}
+
+function showMonotonyTooltip(monotony) {
+  if (!monotonyTooltipEl || !monotony || typeof monotony !== "object") {
+    return;
+  }
+
+  monotonyTooltipEl.textContent = monotonyInterpretationText(monotony);
+  monotonyTooltipEl.style.left = `${monotony.markerPct.toFixed(1)}%`;
+  monotonyTooltipEl.hidden = false;
+}
+
 function renderTolerance(series, endIndex) {
   if (
     !tolerancePanelEl ||
@@ -3683,9 +4259,24 @@ function renderTolerance(series, endIndex) {
     const monotony = calculateMonotonySummary(series, endIndex);
     if (!monotony) {
       monotonyVizEl.hidden = true;
+      monotonyMarkerEl.removeAttribute("aria-label");
+      monotonyMarkerEl.removeAttribute("tabindex");
+      monotonyMarkerEl.onmouseenter = null;
+      monotonyMarkerEl.onmouseleave = null;
+      monotonyMarkerEl.onfocus = null;
+      monotonyMarkerEl.onblur = null;
+      hideMonotonyTooltip();
     } else {
       monotonyVizEl.hidden = false;
       monotonyValueEl.textContent = `${monotony.displayValue} (${monotony.label})`;
+      const tooltipText = monotonyInterpretationText(monotony);
+      monotonyMarkerEl.setAttribute("aria-label", tooltipText);
+      monotonyMarkerEl.setAttribute("tabindex", "0");
+      monotonyMarkerEl.style.cursor = "help";
+      monotonyMarkerEl.onmouseenter = () => showMonotonyTooltip(monotony);
+      monotonyMarkerEl.onmouseleave = () => hideMonotonyTooltip();
+      monotonyMarkerEl.onfocus = () => showMonotonyTooltip(monotony);
+      monotonyMarkerEl.onblur = () => hideMonotonyTooltip();
       if (monotony.status === "green") {
         monotonyValueEl.style.color = "#065f46";
         monotonyMarkerEl.style.background = "#15803d";
@@ -3697,6 +4288,7 @@ function renderTolerance(series, endIndex) {
         monotonyMarkerEl.style.background = "#dc2626";
       }
       monotonyMarkerEl.style.left = `${monotony.markerPct.toFixed(1)}%`;
+      hideMonotonyTooltip();
     }
   }
 }
@@ -3737,31 +4329,187 @@ function applyApiKeyUi() {
   }
 }
 
-function applyLookbackUi(lookbackDays) {
-  if (!lookbackDaysEl) {
+function blankHrZoneOverrideRows() {
+  return Array.from({ length: 5 }, (_, idx) => ({
+    label: `Z${idx + 1}`,
+    minBpm: null,
+    maxBpm: null
+  }));
+}
+
+function normalizeHrZoneOverrideRows(rows) {
+  const normalized = blankHrZoneOverrideRows();
+  if (!Array.isArray(rows)) {
+    return normalized;
+  }
+  for (let i = 0; i < normalized.length && i < rows.length; i += 1) {
+    const row = rows[i] && typeof rows[i] === "object" ? rows[i] : {};
+    const minValue = Number(row.minBpm);
+    const maxValue = Number(row.maxBpm);
+    normalized[i] = {
+      label: `Z${i + 1}`,
+      minBpm: Number.isFinite(minValue) ? Number(minValue) : null,
+      maxBpm: Number.isFinite(maxValue) ? Number(maxValue) : null
+    };
+  }
+  return normalized;
+}
+
+function isFiniteInputValue(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
+function hasAnyHrZoneOverrides(rows) {
+  return normalizeHrZoneOverrideRows(rows).some((row) => isFiniteInputValue(row.minBpm) || isFiniteInputValue(row.maxBpm));
+}
+
+function formatHrZoneRange(zone) {
+  const minBpm = Number(zone?.minBpm);
+  const maxBpm = Number(zone?.maxBpm);
+  if (Number.isFinite(minBpm) && Number.isFinite(maxBpm)) {
+    return `${Math.round(minBpm)}-${Math.round(maxBpm)} bpm`;
+  }
+  if (Number.isFinite(minBpm)) {
+    return `>=${Math.round(minBpm)} bpm`;
+  }
+  if (Number.isFinite(maxBpm)) {
+    return `<${Math.round(maxBpm)} bpm`;
+  }
+  return "n/a";
+}
+
+function renderHrZoneOverridesForm() {
+  if (!hrZoneOverridesRootEl) {
     return;
   }
 
-  if (lookbackDays === "all") {
-    lookbackDaysEl.value = "all";
-    return;
+  const overrideRows = normalizeHrZoneOverrideRows(latestHrZonesRunningOverride);
+  const defaultZones = Array.isArray(latestDefaultHrZonesRunning) ? latestDefaultHrZonesRunning : [];
+  const appliedZones = Array.isArray(latestHrZonesRunning) ? latestHrZonesRunning : [];
+  const defaultThresholdText = isFiniteInputValue(latestDefaultRunningThresholdHr)
+    ? `${Math.round(Number(latestDefaultRunningThresholdHr))} bpm`
+    : "n/a";
+  const appliedThresholdText = isFiniteInputValue(latestRunningThresholdHr)
+    ? `${Math.round(Number(latestRunningThresholdHr))} bpm`
+    : "n/a";
+  const thresholdOverrideValue = isFiniteInputValue(latestRunningThresholdHrOverride)
+    ? String(Number(latestRunningThresholdHrOverride))
+    : "";
+  const zoneOverrideRowsActive = overrideRows.filter(
+    (row) => isFiniteInputValue(row.minBpm) || isFiniteInputValue(row.maxBpm)
+  ).length;
+
+  if (hrZoneSettingsSummaryEl) {
+    hrZoneSettingsSummaryEl.textContent = [
+      `Default LTHR ${defaultThresholdText}`,
+      `Applied ${appliedThresholdText}`,
+      zoneOverrideRowsActive > 0 ? `Zone overrides ${zoneOverrideRowsActive}` : "No zone overrides"
+    ].join(" | ");
+  }
+  if (hrZoneOverridesStateEl && !hrZoneOverridesStateEl.textContent.trim()) {
+    hrZoneOverridesStateEl.textContent = "Blank override fields use defaults.";
   }
 
-  const parsed = Number(lookbackDays);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return;
+  const zoneRowsHtml = overrideRows
+    .map((row, idx) => {
+      const defaultZone = defaultZones[idx] || null;
+      const appliedZone = appliedZones[idx] || defaultZone || null;
+      const overrideMinValue = isFiniteInputValue(row.minBpm) ? String(Number(row.minBpm)) : "";
+      const overrideMaxValue = isFiniteInputValue(row.maxBpm) ? String(Number(row.maxBpm)) : "";
+      return `
+        <div class="hr-zone-settings-row">
+          <div class="hr-zone-settings-cell hr-zone-settings-label">${escapeHtml(row.label)}</div>
+          <div class="hr-zone-settings-cell hr-zone-settings-default">${escapeHtml(formatHrZoneRange(defaultZone))}</div>
+          <div class="hr-zone-settings-cell hr-zone-settings-applied">${escapeHtml(formatHrZoneRange(appliedZone))}</div>
+          <input
+            class="hr-zone-settings-input"
+            type="number"
+            inputmode="decimal"
+            step="0.1"
+            min="0"
+            max="260"
+            name="zone-${idx}-min"
+            value="${escapeHtml(overrideMinValue)}"
+            placeholder="default"
+            aria-label="${escapeHtml(row.label)} minimum override"
+          />
+          <input
+            class="hr-zone-settings-input"
+            type="number"
+            inputmode="decimal"
+            step="0.1"
+            min="0"
+            max="260"
+            name="zone-${idx}-max"
+            value="${escapeHtml(overrideMaxValue)}"
+            placeholder="${idx === overrideRows.length - 1 ? "open" : "default"}"
+            aria-label="${escapeHtml(row.label)} maximum override"
+          />
+        </div>
+      `;
+    })
+    .join("");
+
+  hrZoneOverridesRootEl.innerHTML = `
+    <div class="hr-zone-settings-table">
+      <div class="hr-zone-settings-head">Setting</div>
+      <div class="hr-zone-settings-head">Default</div>
+      <div class="hr-zone-settings-head">Applied</div>
+      <div class="hr-zone-settings-head">Override Min</div>
+      <div class="hr-zone-settings-head">Override Max</div>
+
+      <div class="hr-zone-settings-row hr-zone-settings-row-threshold">
+        <div class="hr-zone-settings-cell hr-zone-settings-label">LTHR</div>
+        <div class="hr-zone-settings-cell hr-zone-settings-default">${escapeHtml(defaultThresholdText)}</div>
+        <div class="hr-zone-settings-cell hr-zone-settings-applied">${escapeHtml(appliedThresholdText)}</div>
+        <input
+          class="hr-zone-settings-input hr-zone-settings-input-span-2"
+          type="number"
+          inputmode="decimal"
+          step="0.1"
+          min="80"
+          max="240"
+          name="running-threshold-override"
+          value="${escapeHtml(thresholdOverrideValue)}"
+          placeholder="default"
+          aria-label="Running threshold heart rate override"
+        />
+      </div>
+
+      ${zoneRowsHtml}
+    </div>
+  `;
+}
+
+function readHrZoneOverridesFromForm() {
+  const rows = blankHrZoneOverrideRows();
+  if (!hrZoneOverridesFormEl) {
+    return {
+      runningThresholdHrOverride: null,
+      hrZonesRunningOverride: rows
+    };
   }
 
-  const normalized = String(Math.round(parsed));
-  const exists = Array.from(lookbackDaysEl.options).some((option) => option.value === normalized);
-  if (!exists) {
-    const option = document.createElement("option");
-    option.value = normalized;
-    option.textContent = `${normalized} days`;
-    lookbackDaysEl.append(option);
+  const thresholdInput = hrZoneOverridesFormEl.querySelector('input[name="running-threshold-override"]');
+  const thresholdValue = thresholdInput ? thresholdInput.value.trim() : "";
+  const runningThresholdHrOverride = thresholdValue ? Number(thresholdValue) : null;
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const minInput = hrZoneOverridesFormEl.querySelector(`input[name="zone-${i}-min"]`);
+    const maxInput = hrZoneOverridesFormEl.querySelector(`input[name="zone-${i}-max"]`);
+    const minValue = minInput ? minInput.value.trim() : "";
+    const maxValue = maxInput ? maxInput.value.trim() : "";
+    rows[i] = {
+      label: `Z${i + 1}`,
+      minBpm: minValue ? Number(minValue) : null,
+      maxBpm: maxValue ? Number(maxValue) : null
+    };
   }
 
-  lookbackDaysEl.value = normalized;
+  return {
+    runningThresholdHrOverride: Number.isFinite(runningThresholdHrOverride) ? runningThresholdHrOverride : null,
+    hrZonesRunningOverride: rows
+  };
 }
 
 function persistVisibleLines() {
@@ -3813,7 +4561,8 @@ function persistExtraLines() {
     localStorage.setItem(
       EXTRA_LINES_STORAGE_KEY,
       JSON.stringify({
-        rampCap: showRampCapLine
+        rampCap: showRampCapLine,
+        runBars: showRunBars
       })
     );
   } catch {
@@ -3832,6 +4581,9 @@ function loadExtraLines() {
     if (parsed && typeof parsed === "object") {
       if (typeof parsed.rampCap === "boolean") {
         showRampCapLine = parsed.rampCap;
+      }
+      if (typeof parsed.runBars === "boolean") {
+        showRunBars = parsed.runBars;
       }
     }
   } catch {
@@ -4060,6 +4812,13 @@ function drawChart(series) {
       button.classList.remove("is-active");
       button.setAttribute("aria-pressed", "false");
     }
+    if (timelineRangeSummaryEl) {
+      timelineRangeSummaryEl.textContent = "";
+    }
+    if (timelineRangeWarningEl) {
+      timelineRangeWarningEl.hidden = true;
+      timelineRangeWarningEl.textContent = "No activities in selected timeline range.";
+    }
     renderRecentActivities({ runs: latestRunsData });
     return;
   }
@@ -4105,6 +4864,15 @@ function drawChart(series) {
   persistViewRange(series);
 
   const windowSeries = series.slice(viewStartIndex, viewEndIndex + 1);
+  const runsInWindow = buildRunsInDateRange(windowSeries[0].date, windowSeries[windowSeries.length - 1].date);
+  if (timelineRangeSummaryEl) {
+    const count = runsInWindow.length;
+    timelineRangeSummaryEl.textContent = `${count} ${count === 1 ? "activity" : "activities"}`;
+  }
+  if (timelineRangeWarningEl) {
+    timelineRangeWarningEl.hidden = runsInWindow.length > 0;
+    timelineRangeWarningEl.textContent = "No activities in selected timeline range.";
+  }
   const windowRangeLabel = `${windowSeries[0].date} - ${windowSeries[windowSeries.length - 1].date}`;
   renderFoundationalStats(windowSeries[0].date, windowSeries[windowSeries.length - 1].date);
   renderRecentActivities(
@@ -4188,6 +4956,15 @@ function drawChart(series) {
     }))
   );
   const rampCapLineEnabled = showRampCapLine;
+  const maxVisibleSeriesValue = Math.max(
+    0,
+    ...windowSeries.flatMap((item) => metas.map((meta) => getValue(item, meta.key)).filter(Number.isFinite))
+  );
+  const maxRampCapValue = rampCapLineEnabled
+    ? Math.max(0, ...rampCapValues.filter((value) => Number.isFinite(value)))
+    : 0;
+  const tooltipAnchorValue = Math.max(maxVisibleSeriesValue, maxRampCapValue);
+  const tooltipAnchorY = yScale(tooltipAnchorValue);
 
   const yTicks = 5;
   const yGuides = [];
@@ -4201,6 +4978,69 @@ function drawChart(series) {
   for (let i = 0; i <= xTicks; i += 1) {
     const idx = Math.round((windowSeries.length - 1) * (i / xTicks));
     xGuides.push({ x: xScale(idx), label: formatDateLabel(windowSeries[idx].date) });
+  }
+
+  const dayIndexByDate = new Map(windowSeries.map((item, idx) => [String(item?.date || ""), idx]));
+  const runsByDate = new Map();
+  for (const run of latestRunsData) {
+    const dateKey = String(run?.date || "");
+    const dayIndex = dayIndexByDate.get(dateKey);
+    if (!Number.isFinite(dayIndex)) {
+      continue;
+    }
+
+    const distanceKm = Number(run?.distanceKm);
+    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+      continue;
+    }
+
+    if (!runsByDate.has(dateKey)) {
+      runsByDate.set(dateKey, []);
+    }
+    runsByDate.get(dateKey).push({
+      id: normalizeActivityId(run?.id),
+      date: dateKey,
+      name: formatRunName(run),
+      distanceKm
+    });
+  }
+
+  const daySpacing = windowSeries.length > 1 ? innerW / (windowSeries.length - 1) : innerW;
+  const runGroupWidth = Math.max(2.2, Math.min(20, daySpacing * 0.72));
+  const runBars = [];
+  for (const [dateKey, runsOnDay] of runsByDate.entries()) {
+    const dayIndex = dayIndexByDate.get(dateKey);
+    if (!Number.isFinite(dayIndex) || !Array.isArray(runsOnDay) || !runsOnDay.length) {
+      continue;
+    }
+
+    const centerX = xScale(dayIndex);
+    const runCount = runsOnDay.length;
+    const barGap = runCount > 1 ? 1 : 0;
+    const computedBarWidth = (runGroupWidth - barGap * (runCount - 1)) / runCount;
+    const barWidth = Math.max(1.2, Math.min(7, computedBarWidth));
+    const totalWidth = runCount * barWidth + barGap * (runCount - 1);
+    const startX = centerX - totalWidth / 2;
+
+    for (let i = 0; i < runsOnDay.length; i += 1) {
+      const run = runsOnDay[i];
+      const topY = yScale(run.distanceKm);
+      const baseY = yScale(0);
+      const heightPx = Math.max(1, baseY - topY);
+      const x = startX + i * (barWidth + barGap);
+      const title = `${formatDateLabel(run.date)} | ${run.name} | ${formatDistance(run.distanceKm)}`;
+      runBars.push({
+        activityId: run.id,
+        date: run.date,
+        name: run.name,
+        distanceKm: run.distanceKm,
+        x,
+        y: topY,
+        width: barWidth,
+        height: heightPx,
+        title
+      });
+    }
   }
 
   const paths = Object.fromEntries(
@@ -4231,6 +5071,23 @@ function drawChart(series) {
       `
         )
         .join("")}
+
+      ${
+        showRunBars
+          ? runBars
+              .map(
+                (bar) =>
+                  `<rect class="rolling-run-bar" data-activity-id="${escapeHtml(
+                    String(bar.activityId || "")
+                  )}" x="${bar.x.toFixed(2)}" y="${bar.y.toFixed(2)}" width="${bar.width.toFixed(2)}" height="${bar.height.toFixed(
+                    2
+                  )}" fill="#7aaea1" fill-opacity="0.5" stroke="#5c8f83" stroke-opacity="0.65" stroke-width="0.6" rx="1"><title>${escapeHtml(
+                    bar.title
+                  )}</title></rect>`
+              )
+              .join("")
+          : ""
+      }
 
       ${metas
         .map(
@@ -4289,6 +5146,15 @@ function drawChart(series) {
         <span class="swatch ramp-cap-swatch"></span>
         10% cap (90d avg +10%)
       </button>
+      <button
+        type="button"
+        class="legend-item legend-toggle legend-toggle-extra ${showRunBars ? "" : "is-off"}"
+        data-extra="run-bars"
+        aria-pressed="${showRunBars ? "true" : "false"}"
+      >
+        <span class="swatch" style="background:#7aaea1; border:1px solid rgba(92, 143, 131, 0.65);"></span>
+        Run bars
+      </button>
     </div>
   `;
 
@@ -4319,8 +5185,6 @@ function drawChart(series) {
     hoverLine.setAttribute("x2", x);
     hoverLine.removeAttribute("hidden");
 
-    let minY = yScale(0);
-
     for (const meta of SERIES_META) {
       const dot = hoverDots.get(meta.key);
       if (!dot) {
@@ -4333,7 +5197,6 @@ function drawChart(series) {
       }
 
       const y = yScale(getValue(item, meta.key));
-      minY = Math.min(minY, y);
       dot.setAttribute("cx", x);
       dot.setAttribute("cy", y);
       dot.removeAttribute("hidden");
@@ -4348,11 +5211,19 @@ function drawChart(series) {
     const baselineIndicatorText = baselineHasValue
       ? `Baseline: ${formatSignedPct(baselineDeltaPct)} (${formatSignedDistance(baselineDeltaKm)})`
       : "Baseline: n/a";
+    const runsOnDate = runsByDate.get(item.date) ?? [];
+    const runRows = runsOnDate.map(
+      (run) =>
+        `<div class="chart-tooltip-run-item">${escapeHtml(run.name)} (${formatDistance(Number(run.distanceKm || 0))})</div>`
+    );
+    while (runRows.length < 2) {
+      runRows.push('<div class="chart-tooltip-run-item chart-tooltip-run-item-placeholder">&nbsp;</div>');
+    }
+    const runsText = `<div class="chart-tooltip-runs">${runRows.join("")}</div>`;
 
     if (rampCapDot) {
       if (rampCapLineEnabled && rampCapValue !== null && Number.isFinite(rampCapValue)) {
         const yCap = yScale(rampCapValue);
-        minY = Math.min(minY, yCap);
         rampCapDot.setAttribute("cx", x);
         rampCapDot.setAttribute("cy", yCap);
         rampCapDot.removeAttribute("hidden");
@@ -4375,13 +5246,14 @@ function drawChart(series) {
         .map((meta) => `${meta.days ? `${meta.days}d` : meta.label}: ${formatDistance(getValue(item, meta.key))}`)
         .join("<br/>")}
       ${rampCapText}
+      ${runsText}
     `;
     tooltip.removeAttribute("hidden");
 
     const svgRect = svgEl.getBoundingClientRect();
     const wrapRect = chartWrap.getBoundingClientRect();
     const xPx = (x / width) * svgRect.width + (svgRect.left - wrapRect.left);
-    const topPx = ((minY - margin.top) / innerH) * svgRect.height + (svgRect.top - wrapRect.top);
+    const topPx = ((tooltipAnchorY - margin.top) / innerH) * svgRect.height + (svgRect.top - wrapRect.top);
     const clampedX = Math.min(wrapRect.width - edgePad, Math.max(edgePad, xPx));
     const topSafe = Math.max(44, topPx);
 
@@ -4391,6 +5263,7 @@ function drawChart(series) {
 
   function clearHover() {
     hoverLine.setAttribute("hidden", "");
+    capture.style.cursor = "";
 
     for (const dot of hoverDots.values()) {
       dot?.setAttribute("hidden", "");
@@ -4407,6 +5280,8 @@ function drawChart(series) {
       return;
     }
 
+    capture.style.cursor = findRunBarAtEvent(event) ? "pointer" : "";
+
     const xInSvg = ((event.clientX - rect.left) / rect.width) * width;
     const clamped = Math.min(width - margin.right, Math.max(margin.left, xInSvg));
     const t = innerW <= 0 ? 0 : (clamped - margin.left) / innerW;
@@ -4414,8 +5289,42 @@ function drawChart(series) {
     showHover(index);
   }
 
+  function findRunBarAtEvent(event) {
+    if (!showRunBars) {
+      return null;
+    }
+
+    const rect = svgEl.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return null;
+    }
+
+    const xInSvg = ((event.clientX - rect.left) / rect.width) * width;
+    const yInSvg = ((event.clientY - rect.top) / rect.height) * height;
+    for (const bar of runBars) {
+      if (
+        xInSvg >= bar.x &&
+        xInSvg <= bar.x + bar.width &&
+        yInSvg >= bar.y &&
+        yInSvg <= bar.y + bar.height
+      ) {
+        return bar;
+      }
+    }
+    return null;
+  }
+
+  function handleChartClick(event) {
+    const clickedBar = findRunBarAtEvent(event);
+    const clickedActivityId = normalizeActivityId(clickedBar?.activityId);
+    if (clickedActivityId) {
+      openActivityDetail(clickedActivityId, { selectActivity: true });
+    }
+  }
+
   capture.addEventListener("pointermove", moveHover);
   capture.addEventListener("pointerenter", moveHover);
+  capture.addEventListener("click", handleChartClick);
   capture.addEventListener("pointerleave", clearHover);
   capture.addEventListener("pointercancel", clearHover);
   capture.addEventListener("mouseleave", clearHover);
@@ -4430,6 +5339,12 @@ function drawChart(series) {
       const extra = toggle.getAttribute("data-extra");
       if (extra === "ramp-cap") {
         showRampCapLine = !showRampCapLine;
+        persistExtraLines();
+        drawChart(latestSeriesData);
+        return;
+      }
+      if (extra === "run-bars") {
+        showRunBars = !showRunBars;
         persistExtraLines();
         drawChart(latestSeriesData);
         return;
@@ -4462,14 +5377,25 @@ async function refreshSettings() {
   const response = await fetch("/api/settings");
   if (!response.ok) {
     hasStoredApiKey = false;
+    latestRunningThresholdHrOverride = null;
+    latestHrZonesRunningOverride = blankHrZoneOverrideRows();
     applyApiKeyUi();
+    renderHrZoneOverridesForm();
     setStatus("Could not load API key settings.");
     return;
   }
 
   const data = await response.json();
   hasStoredApiKey = Boolean(data.hasApiKey);
+  latestRunningThresholdHrOverride = isFiniteInputValue(data.runningThresholdHrOverride)
+    ? Number(data.runningThresholdHrOverride)
+    : null;
+  latestHrZonesRunningOverride = normalizeHrZoneOverrideRows(data.hrZonesRunningOverride);
   applyApiKeyUi();
+  renderHrZoneOverridesForm();
+  if (!hasStoredApiKey) {
+    renderResyncNotice({ activityCount: 0, staleActivityMetaCount: 0, activityMetaSourceVersion: null });
+  }
 
   if (hasStoredApiKey) {
     setStatus("API key saved. Ready to sync.");
@@ -4481,7 +5407,15 @@ async function refreshSettings() {
 async function refreshChart() {
   const response = await fetch("/api/series");
   const data = await response.json();
+  latestSeriesNoticeData = data;
   latestRunsData = Array.isArray(data.runs) ? data.runs : [];
+  latestHrZonesRunning = Array.isArray(data.hrZonesRunning) ? data.hrZonesRunning : [];
+  latestDefaultHrZonesRunning = Array.isArray(data.defaultHrZonesRunning) ? data.defaultHrZonesRunning : [];
+  latestHrZonesRunningOverride = normalizeHrZoneOverrideRows(data.hrZonesRunningOverride);
+  latestDefaultRunningThresholdHr = isFiniteInputValue(data.defaultRunningThresholdHr) ? Number(data.defaultRunningThresholdHr) : null;
+  latestRunningThresholdHrOverride = isFiniteInputValue(data.runningThresholdHrOverride) ? Number(data.runningThresholdHrOverride) : null;
+  latestRunningThresholdHr = isFiniteInputValue(data.runningThresholdHr) ? Number(data.runningThresholdHr) : null;
+  renderHrZoneOverridesForm();
   const latestRunIds = new Set(latestRunsData.map((run) => normalizeActivityId(run?.id)).filter(Boolean));
   if (selectedActivityIds.size || selectionAnchorActivityId) {
     for (const selectedId of Array.from(selectedActivityIds)) {
@@ -4499,8 +5433,9 @@ async function refreshChart() {
     closeActivityDetailDrawer({ clearSelection: false });
   }
   renderConnectionSummary(data);
+  renderResyncNotice(data);
+  updateFetchAllButtonLabel(data.activityCount);
 
-  applyLookbackUi(data.lookbackDays);
   if (Array.isArray(data.paceHrPoints) && data.paceHrPoints.length) {
     latestPaceHrPoints = data.paceHrPoints;
   } else {
@@ -4517,13 +5452,7 @@ async function refreshChart() {
   void syncActivityDetailPanelToSelection();
 
   if (data.syncedAt) {
-    const lookbackText =
-      data.lookbackDays === "all"
-        ? ", lookback all data"
-        : Number.isFinite(Number(data.lookbackDays))
-          ? `, lookback ${Math.round(data.lookbackDays)}d`
-          : "";
-    setStatus(`Loaded ${data.activityCount} run activities${lookbackText}.`);
+    setStatus(`Loaded ${data.activityCount} run activities.`);
   }
 
   return data;
@@ -4535,20 +5464,17 @@ async function runSync(options = {}) {
     return { ok: false, skipped: true, reason: "missing_api_key" };
   }
 
-  syncButtonEl.disabled = true;
-  if (syncRangeButtonEl) {
-    syncRangeButtonEl.disabled = true;
-  }
+  syncInProgress = true;
+  setSyncControlsDisabled(true);
+  setResetControlsDisabled(true);
+  renderResyncNotice(latestSeriesNoticeData);
   setStatus(auto ? "Last sync is older than today. Auto-updating from Intervals.icu..." : "Updating from Intervals.icu...");
-
-  const lookbackSelection = lookbackDaysEl.value;
-  const lookbackDays = lookbackSelection === "all" ? "all" : Number(lookbackSelection);
 
   try {
     const response = await fetch("/api/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "incremental", lookbackDays })
+      body: JSON.stringify({ mode: "update" })
     });
 
     const data = await response.json();
@@ -4571,33 +5497,30 @@ async function runSync(options = {}) {
     setStatus(error.message || "Sync failed.");
     return { ok: false, error: error.message || "Sync failed." };
   } finally {
-    syncButtonEl.disabled = false;
-    if (syncRangeButtonEl) {
-      syncRangeButtonEl.disabled = false;
-    }
+    syncInProgress = false;
+    setSyncControlsDisabled(false);
+    setResetControlsDisabled(false);
+    renderResyncNotice(latestSeriesNoticeData);
   }
 }
 
-async function runRangeSync() {
+async function runFetchAll() {
   if (!hasStoredApiKey) {
     setStatus("Missing API key. Save it first.");
     return { ok: false, skipped: true, reason: "missing_api_key" };
   }
 
-  syncButtonEl.disabled = true;
-  if (syncRangeButtonEl) {
-    syncRangeButtonEl.disabled = true;
-  }
-  setStatus("Syncing selected range from Intervals.icu...");
-
-  const lookbackSelection = lookbackDaysEl.value;
-  const lookbackDays = lookbackSelection === "all" ? "all" : Number(lookbackSelection);
+  syncInProgress = true;
+  setSyncControlsDisabled(true);
+  setResetControlsDisabled(true);
+  renderResyncNotice(latestSeriesNoticeData);
+  setStatus((latestRunsData?.length || 0) > 0 ? "Reloading all historic data from Intervals.icu..." : "Fetching all historic data from Intervals.icu...");
 
   try {
     const response = await fetch("/api/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "range", lookbackDays })
+      body: JSON.stringify({ mode: "fetch-all" })
     });
 
     const data = await response.json();
@@ -4610,17 +5533,67 @@ async function runRangeSync() {
       ? `, built ${Math.round(Number(data.splitPoints))} pace/HR points`
       : "";
     const unsupportedText = data.splitUnsupported ? " (per-km stream fallback unavailable via API for this account)" : "";
-    setStatus(`Range sync complete. Pulled ${Math.round(Number(data.count) || 0)} run activities${splitText}.${unsupportedText}`);
+    const prefix = (latestRunsData?.length || 0) > 0 ? "Reload all complete." : "Fetch all complete.";
+    setStatus(`${prefix} Pulled ${Math.round(Number(data.count) || 0)} run activities${splitText}.${unsupportedText}`);
     await refreshChart();
     return { ok: true, data };
   } catch (error) {
     setStatus(error.message || "Sync failed.");
     return { ok: false, error: error.message || "Sync failed." };
   } finally {
-    syncButtonEl.disabled = false;
-    if (syncRangeButtonEl) {
-      syncRangeButtonEl.disabled = false;
+    syncInProgress = false;
+    setSyncControlsDisabled(false);
+    setResetControlsDisabled(false);
+    renderResyncNotice(latestSeriesNoticeData);
+  }
+}
+
+async function runLocalDataReset(mode) {
+  const normalizedMode = String(mode || "").toLowerCase();
+  if (normalizedMode !== "clear-activities" && normalizedMode !== "delete-all") {
+    return { ok: false, error: "Invalid reset mode." };
+  }
+
+  syncInProgress = true;
+  setSyncControlsDisabled(true);
+  setResetControlsDisabled(true);
+  renderResyncNotice(latestSeriesNoticeData);
+  setStatus(
+    normalizedMode === "delete-all" ? "Deleting all local data..." : "Clearing local activity data..."
+  );
+
+  try {
+    const response = await fetch("/api/local-data/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: normalizedMode })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setStatus(data.error || "Could not reset local data.");
+      return { ok: false, error: data.error || "Could not reset local data." };
     }
+
+    hasStoredApiKey = Boolean(data.hasApiKey);
+    closeActivityDetailDrawer({ clearSelection: true });
+    activityDetailCache.clear();
+    activityDetailInFlight.clear();
+    await refreshSettings();
+    await refreshChart();
+    setStatus(
+      normalizedMode === "delete-all"
+        ? "All local data deleted, including API key."
+        : "Local activity data cleared. API key kept."
+    );
+    return { ok: true, data };
+  } catch (error) {
+    setStatus(error.message || "Could not reset local data.");
+    return { ok: false, error: error.message || "Could not reset local data." };
+  } finally {
+    syncInProgress = false;
+    setSyncControlsDisabled(false);
+    setResetControlsDisabled(false);
+    renderResyncNotice(latestSeriesNoticeData);
   }
 }
 
@@ -4661,11 +5634,103 @@ settingsFormEl.addEventListener("submit", async (event) => {
   }
 });
 
+hrZoneOverridesFormEl?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = readHrZoneOverridesFromForm();
+  if (hrZoneOverridesStateEl) {
+    hrZoneOverridesStateEl.textContent = "Saving overrides...";
+  }
+
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (hrZoneOverridesStateEl) {
+        hrZoneOverridesStateEl.textContent = data.error || "Failed to save HR zone overrides.";
+      }
+      setStatus(data.error || "Failed to save HR zone overrides.");
+      return;
+    }
+
+    if (hrZoneOverridesStateEl) {
+      hrZoneOverridesStateEl.textContent = "Overrides saved.";
+    }
+    await refreshSettings();
+    await refreshChart();
+    setStatus("HR zone overrides saved.");
+  } catch (error) {
+    const message = error.message || "Failed to save HR zone overrides.";
+    if (hrZoneOverridesStateEl) {
+      hrZoneOverridesStateEl.textContent = message;
+    }
+    setStatus(message);
+  }
+});
+
+hrZoneOverridesResetEl?.addEventListener("click", async () => {
+  if (hrZoneOverridesStateEl) {
+    hrZoneOverridesStateEl.textContent = "Clearing overrides...";
+  }
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        runningThresholdHrOverride: null,
+        hrZonesRunningOverride: blankHrZoneOverrideRows()
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (hrZoneOverridesStateEl) {
+        hrZoneOverridesStateEl.textContent = data.error || "Failed to clear HR zone overrides.";
+      }
+      setStatus(data.error || "Failed to clear HR zone overrides.");
+      return;
+    }
+
+    if (hrZoneOverridesStateEl) {
+      hrZoneOverridesStateEl.textContent = "Overrides cleared.";
+    }
+    await refreshSettings();
+    await refreshChart();
+    setStatus("HR zone overrides cleared.");
+  } catch (error) {
+    const message = error.message || "Failed to clear HR zone overrides.";
+    if (hrZoneOverridesStateEl) {
+      hrZoneOverridesStateEl.textContent = message;
+    }
+    setStatus(message);
+  }
+});
+
 syncButtonEl.addEventListener("click", async () => {
   await runSync({ auto: false });
 });
-syncRangeButtonEl?.addEventListener("click", async () => {
-  await runRangeSync();
+fetchAllButtonEl?.addEventListener("click", async () => {
+  await runFetchAll();
+});
+clearActivityDataButtonEl?.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Delete all activities and synced charts? Your saved API key will be kept."
+  );
+  if (!confirmed) {
+    return;
+  }
+  await runLocalDataReset("clear-activities");
+});
+deleteAllDataButtonEl?.addEventListener("click", async () => {
+  const confirmed = window.confirm(
+    "Delete all data, including your saved API key? This cannot be undone."
+  );
+  if (!confirmed) {
+    return;
+  }
+  await runLocalDataReset("delete-all");
 });
 
 function applyRangeChange(changed) {
@@ -4874,6 +5939,36 @@ heatmapBinSizeEl?.addEventListener("change", () => {
     drawChart(latestSeriesData);
   }
 });
+mobileLeftDrawerToggleEl?.addEventListener("click", () => {
+  setMobileLeftDrawerOpen(!leftColumnEl?.classList.contains("is-mobile-open"));
+});
+mobileLeftDrawerCloseEl?.addEventListener("click", () => {
+  setMobileLeftDrawerOpen(false);
+});
+mobileLeftDrawerBackdropEl?.addEventListener("click", () => {
+  setMobileLeftDrawerOpen(false);
+});
+document.addEventListener("click", (event) => {
+  if (!isMobilePanelsLayout() || !leftColumnEl?.classList.contains("is-mobile-open")) {
+    return;
+  }
+
+  const target = event.target;
+  if (!(target instanceof Node)) {
+    return;
+  }
+
+  if (leftColumnEl?.contains(target) || mobileLeftDrawerToggleEl?.contains(target)) {
+    return;
+  }
+
+  setMobileLeftDrawerOpen(false);
+});
+activityDetailOverlayEl?.addEventListener("click", (event) => {
+  if (event.target === activityDetailOverlayEl && isMobilePanelsLayout()) {
+    closeActivityDetailDrawer({ clearSelection: false });
+  }
+});
 window.addEventListener("pointermove", moveScrubWindowDrag);
 window.addEventListener("pointerup", endScrubWindowDrag);
 window.addEventListener("pointercancel", endScrubWindowDrag);
@@ -4912,8 +6007,19 @@ activityDetailContentEl?.addEventListener("scroll", () => {
   }
 });
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && leftColumnEl?.classList.contains("is-mobile-open")) {
+    setMobileLeftDrawerOpen(false);
+    return;
+  }
   if (event.key === "Escape" && isActivityDetailOpen()) {
     closeActivityDetailDrawer();
+  }
+});
+window.addEventListener("resize", () => {
+  if (!isMobilePanelsLayout()) {
+    setMobileLeftDrawerOpen(false);
+  } else {
+    syncMobilePanelBodyState();
   }
 });
 window.addEventListener("beforeunload", () => {
@@ -4925,7 +6031,6 @@ async function boot() {
     setActivityDetailOpenState(false);
     pendingUrlActivityId = readActivityIdFromUrl();
     pendingDevReloadSnapshot = consumeDevReloadSnapshot();
-    hadDevReloadSnapshot = Boolean(pendingDevReloadSnapshot);
     applyPendingDevReloadSnapshotEarly();
     if (recentActivitiesSearchEl) {
       recentActivitiesSearchQuery = recentActivitiesSearchEl.value || "";

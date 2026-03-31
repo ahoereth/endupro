@@ -4,7 +4,7 @@ Local personal dashboard for endurance running data.
 
 ## What this version does
 
-- Stores your Intervals.icu API key in `data/settings.json`.
+- Stores your Intervals.icu API key and local HR-zone override settings in `data/settings.json`.
 - Pulls your run activities from Intervals.icu into `data/activities.json`.
 - Computes and charts 7, 14, 30, 90, and 180-day rolling sums of distance in km.
 - Computes and charts a 30-day moving average of the 7-day sum (`sum7ma30`) for smoother trend context.
@@ -47,3 +47,4 @@ npm run start:server
   - `GET https://intervals.icu/api/v1/athlete/0/activities?oldest=YYYY-MM-DD&newest=YYYY-MM-DD`
 - Activity distances are interpreted as metric and converted to kilometers.
 - Interval split heart rate/pace points are read from Intervals activity details (`?intervals=true`) when available; if absent, per-km points are derived from activity streams (`distance`, `time`, `heartrate`), then run-level points are used as fallback.
+- Running HR zones are always kept as a 5-zone model derived from running lactate-threshold HR (`lthr`) using 85/90/95/100% cutoffs. Explicit HR-zone boundaries from Intervals.icu are ignored.

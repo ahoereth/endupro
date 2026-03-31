@@ -9,12 +9,32 @@
   <body>
     <main class="layout">
       <header class="hero">
-        <h1>Fitboard</h1>
-        <p>Endurance dashboard: rolling run distance sums (km).</p>
+        <div class="hero-top">
+          <div class="hero-copy">
+            <div class="hero-kicker">Intervals.icu Run Intelligence</div>
+            <h1>Fitboard</h1>
+            <p>Track running load, tolerance, and pace-versus-heart-rate trends across your training history.</p>
+          </div>
+          <button
+            id="mobile-left-drawer-toggle"
+            type="button"
+            class="mobile-chrome-button"
+            aria-expanded="false"
+            aria-controls="left-column"
+          >
+            Menu
+          </button>
+        </div>
       </header>
 
+      <div id="mobile-left-drawer-backdrop" class="mobile-panel-backdrop"></div>
+
       <div id="app-grid" class="app-grid">
-        <aside class="left-column">
+        <aside id="left-column" class="left-column" aria-label="Controls and recent activities">
+          <div class="mobile-left-drawer-header">
+            <h2>Menu</h2>
+            <button id="mobile-left-drawer-close" type="button" class="secondary-button">Close</button>
+          </div>
           <section class="card controls">
             <h2>Intervals.icu Connection</h2>
             <form id="settings-form" autocomplete="off">
@@ -39,23 +59,21 @@
                 <span id="latest-activity-time-value" class="summary-value">n/a</span>
               </div>
             </div>
+            <div id="resync-notice" class="resync-notice" hidden>
+              <p id="resync-notice-text" class="resync-notice-text"></p>
+            </div>
             <p id="status" class="status">Loading...</p>
             <div class="row compact connection-actions">
+              <button id="fetch-all-button" type="button">Fetch All</button>
               <button id="sync-button" type="button">Update</button>
-              <button id="sync-range-button" type="button">Sync Range</button>
-              <select id="lookback-days" aria-label="Lookback days">
-                <option value="all">All data</option>
-                <option value="180">180 days</option>
-                <option value="365" selected>365 days</option>
-                <option value="730">730 days</option>
-                <option value="1095">1095 days (3y)</option>
-                <option value="1825">1825 days (5y)</option>
-                <option value="3650">3650 days (10y)</option>
-              </select>
+            </div>
+            <div class="row compact data-reset-actions">
+              <button id="clear-activity-data-button" type="button" class="secondary-button">Clear Activities</button>
+              <button id="delete-all-data-button" type="button" class="secondary-button danger-button">Delete All Data</button>
             </div>
           </section>
 
-          <section class="card recent-activities-card">
+          <section class="card recent-activities-card sticky-viewport-panel">
             <div class="chart-header">
               <h2>Recent Activities</h2>
               <p id="recent-activities-count"></p>
@@ -75,6 +93,7 @@
           <section class="card timeline-card">
             <div class="chart-header">
               <h2>Timeline</h2>
+              <p id="timeline-range-summary"></p>
             </div>
             <div id="timeline-presets" class="timeline-presets">
               <button type="button" class="timeline-preset-button" data-range-days="30">Last 30 days</button>
@@ -93,6 +112,7 @@
               </div>
               <span id="scrub-label" class="scrub-label"></span>
             </div>
+            <p id="timeline-range-warning" class="timeline-range-warning" hidden>No activities in selected timeline range.</p>
           </section>
 
           <section id="tolerance-panel" class="card tolerance-panel" hidden>
@@ -120,6 +140,7 @@
                 <span>2.0</span>
                 <span>3.0+</span>
               </div>
+              <div id="monotony-tooltip" class="monotony-tooltip" hidden></div>
             </div>
           </section>
 
@@ -207,9 +228,28 @@
               <li><strong>Use this as training guidance</strong>, not medical advice. Combine with soreness, sleep, and injury history.</li>
             </ul>
           </section>
+
+          <section class="card hr-zone-settings-card">
+            <div class="chart-header">
+              <h2>HR Zone Settings</h2>
+              <p id="hr-zone-settings-summary"></p>
+            </div>
+            <p class="field-hint">
+              Defaults come from your synced Intervals.icu running threshold HR. Override values are optional and are applied locally. A
+              threshold override recalculates the applied zones before any per-zone overrides are layered on top.
+            </p>
+            <form id="hr-zone-overrides-form" class="hr-zone-overrides-form" autocomplete="off">
+              <div id="hr-zone-overrides-root" class="hr-zone-overrides-root"></div>
+              <div class="row compact hr-zone-overrides-actions">
+                <button type="submit">Save Overrides</button>
+                <button id="hr-zone-overrides-reset" type="button" class="secondary-button">Clear Overrides</button>
+              </div>
+              <p id="hr-zone-overrides-state" class="field-hint"></p>
+            </form>
+          </section>
         </section>
 
-        <aside id="activity-detail-overlay" class="drawer-overlay" aria-hidden="true">
+        <aside id="activity-detail-overlay" class="drawer-overlay sticky-viewport-panel sticky-viewport-panel-flush" aria-hidden="true">
           <section id="activity-detail-drawer" class="activity-drawer" role="region" aria-labelledby="activity-detail-title">
             <div class="activity-drawer-header">
               <h2 id="activity-detail-title">Activity Details</h2>

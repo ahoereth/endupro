@@ -3,7 +3,7 @@
 ## App + Storage
 - Local single-user web app served by `server.js` (Node HTTP server), no external DB.
 - Persistent files in `data/`:
-  - `data/settings.json` stores Intervals.icu API key.
+  - `data/settings.json` stores Intervals.icu API key plus local running LTHR / HR-zone overrides.
   - `data/activities.json` stores:
     - `syncedAt`
     - `lookbackMode` (`days` or `all`)
@@ -16,24 +16,25 @@
 - Sync source: `GET /api/v1/athlete/0/activities?oldest=YYYY-MM-DD&newest=YYYY-MM-DD` (Basic auth `API_KEY:<key>`).
 - Run filtering: only run activities are kept.
 - Two sync modes are supported on `POST /api/sync`:
-  - `mode: "incremental"` (default for UI Update + auto-update):
-    - fetches from a rolling backfill window anchored at last sync date (inclusive minus backfill) through today
+  - `mode: "update"` (default for UI Update + auto-update):
+    - fetches from `min(last-known-activity-day, today-30d)` through today (inclusive)
+    - guarantees at least a 30-day refresh window even when recent data already exists
     - merges fetched activities into existing local history by activity ID
-  - `mode: "range"`:
-    - fetches explicit lookback range (`all` or N days)
-    - replaces local activity set with that normalized range result
+  - `mode: "fetch-all"`:
+    - fetches full history (`oldest=1970-01-01` through today)
+    - replaces local activity set with that normalized full-history result (reload-all behavior when data already exists)
 - Sync response includes:
   - `syncMode`, `syncOldestDate`, `syncNewestDate`
   - `count` (post-sync total stored activities)
   - `fetchedCount` (activities returned in this fetch window)
   - split build stats (`splitPoints`, rebuilt/cached/failed counts)
+  - `runningThresholdHr` when Intervals.icu athlete profile exposes running threshold/LTHR
 
 ## Auto Update On Open
-- On boot, if API key exists and `syncedAt` is not today (local day), app auto-runs incremental update.
+- On boot, if API key exists and `syncedAt` is not today (local day), app auto-runs update mode.
 - Manual controls in connection card:
-  - `Update` button: incremental update mode (default behavior)
-  - `Sync Range` button: explicit range sync using lookback selector
-  - lookback selector: `all`, `180/365/730/1095/1825/3650` days
+  - `Update` button: update mode (recent refresh from last-known day with minimum 30-day window)
+  - `Fetch All` button: full-history load when empty, relabeled `Reload All` once data exists
 
 ## Activity Enrichment + Pace/HR Point Sources
 - Per-activity details fetch:
@@ -54,6 +55,12 @@
 - Interval preservation behavior:
   - all `icu_intervals` entries are preserved for activity detail display
   - only chart-eligible interval entries (valid pace + HR) are used for HR-vs-pace plotting
+- Running HR zones:
+  - target model is always 5 zones
+  - running LTHR/threshold HR is the only source of truth for running HR zones
+  - zones are always synthesized at 85/90/95/100% of threshold
+  - explicit running HR-zone boundaries from Intervals.icu are ignored
+  - local settings can override threshold HR and/or individual zone min/max values
 - Enrichment reliability:
   - retry/backoff for per-activity detail/stream fetches
   - transient per-activity failures preserve prior cached state instead of zeroing data

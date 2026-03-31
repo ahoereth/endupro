@@ -11,7 +11,10 @@ const ACTIVITIES_FILE = path.join(DATA_DIR, "activities.json");
 const PACE_SOURCE_VERSION = 3;
 const SPLIT_SOURCE_VERSION = 5;
 const INTERVAL_SOURCE_VERSION = 2;
-const ACTIVITY_META_SOURCE_VERSION = 2;
+const ACTIVITY_META_SOURCE_VERSION = 3;
+const DETAIL_STREAM_SOURCE_VERSION = 2;
+const HR_ZONE_COUNT = 5;
+const DEFAULT_LTHR_ZONE_EDGE_PCTS = [85, 90, 95, 100];
 const SPLIT_FETCH_CONCURRENCY = 2;
 const ACTIVITY_FETCH_MAX_RETRIES = 3;
 const ACTIVITY_FETCH_RETRY_BASE_MS = 300;
@@ -45,19 +48,41 @@ function writeSseEvent(res, eventName, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function blankHrZoneOverrideRows() {
+  return Array.from({ length: HR_ZONE_COUNT }, (_, idx) => ({
+    label: `Z${idx + 1}`,
+    minBpm: null,
+    maxBpm: null
+  }));
+}
+
+function defaultSettings() {
+  return {
+    apiKey: "",
+    runningThresholdHrOverride: null,
+    hrZonesRunningOverride: blankHrZoneOverrideRows()
+  };
+}
+
 async function ensureDataFiles() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
   try {
     await fs.access(SETTINGS_FILE);
   } catch {
-    await writeJson(SETTINGS_FILE, { apiKey: "" });
+    await writeJson(SETTINGS_FILE, defaultSettings());
   }
 
   try {
     await fs.access(ACTIVITIES_FILE);
   } catch {
-    await writeJson(ACTIVITIES_FILE, { syncedAt: null, lookbackDays: 365, activities: [] });
+    await writeJson(ACTIVITIES_FILE, {
+      syncedAt: null,
+      lookbackDays: 365,
+      runningThresholdHr: null,
+      hrZonesRunning: [],
+      activities: []
+    });
   }
 }
 
@@ -144,6 +169,36 @@ function normalizeHrBpm(activity) {
     if (Number.isFinite(bpm) && bpm >= 30 && bpm <= 240) {
       return Number(bpm.toFixed(1));
     }
+  }
+
+  return null;
+}
+
+function normalizeMaxHrBpm(activity, fallback = null) {
+  if (activity && typeof activity === "object") {
+    const candidates = [
+      activity.icu_max_hr,
+      activity.max_hr,
+      activity.maximum_hr,
+      activity.max_heartrate,
+      activity.heartrate_max,
+      activity.maxHeartRate,
+      activity.maxHrBpm,
+      activity.maxHr,
+      activity.hr_max
+    ];
+
+    for (const value of candidates) {
+      const bpm = Number(value);
+      if (Number.isFinite(bpm) && bpm >= 30 && bpm <= 260) {
+        return Number(bpm.toFixed(1));
+      }
+    }
+  }
+
+  const fallbackValue = Number(fallback);
+  if (Number.isFinite(fallbackValue) && fallbackValue >= 30 && fallbackValue <= 260) {
+    return Number(fallbackValue.toFixed(1));
   }
 
   return null;
@@ -337,6 +392,35 @@ function normalizeAvgTempC(activity, fallback = null) {
   return normalizeTempCandidate(fallback);
 }
 
+function normalizeLoad(activity, fallback = null) {
+  if (activity && typeof activity === "object") {
+    const candidates = [
+      activity.icu_training_load,
+      activity.training_load,
+      activity.trainingLoad,
+      activity.icu_load,
+      activity.load,
+      activity.relative_effort,
+      activity.relativeEffort,
+      activity.effort
+    ];
+
+    for (const candidate of candidates) {
+      const value = safeNumber(candidate);
+      if (value !== null && value >= 0 && value <= 10000) {
+        return Number(value.toFixed(1));
+      }
+    }
+  }
+
+  const fallbackValue = safeNumber(fallback);
+  if (fallbackValue !== null && fallbackValue >= 0 && fallbackValue <= 10000) {
+    return Number(fallbackValue.toFixed(1));
+  }
+
+  return null;
+}
+
 function normalizePaceMinKm(activity, km) {
   const durationCandidates = [
     activity.icu_moving_time,
@@ -411,6 +495,107 @@ function safeNumber(value) {
   }
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function normalizeThresholdOverride(value) {
+  const numeric = safeNumber(value);
+  if (numeric === null) {
+    return null;
+  }
+  if (numeric < 80 || numeric > 240) {
+    throw new Error("Running threshold HR override must be between 80 and 240 bpm.");
+  }
+  return Number(numeric.toFixed(1));
+}
+
+function normalizeHrZoneOverrideRows(raw) {
+  const rows = blankHrZoneOverrideRows();
+  if (!Array.isArray(raw)) {
+    return rows;
+  }
+  for (let i = 0; i < HR_ZONE_COUNT && i < raw.length; i += 1) {
+    const entry = raw[i] && typeof raw[i] === "object" ? raw[i] : {};
+    const minValue = safeNumber(entry.minBpm ?? entry.min ?? entry.lower ?? entry.from ?? null);
+    const maxValue = safeNumber(entry.maxBpm ?? entry.max ?? entry.upper ?? entry.to ?? null);
+    if (minValue !== null && (minValue < 0 || minValue > 260)) {
+      throw new Error(`Zone ${i + 1} min override must be between 0 and 260 bpm.`);
+    }
+    if (maxValue !== null && (maxValue < 0 || maxValue > 260)) {
+      throw new Error(`Zone ${i + 1} max override must be between 0 and 260 bpm.`);
+    }
+    rows[i] = {
+      label: `Z${i + 1}`,
+      minBpm: minValue === null ? null : Number(minValue.toFixed(1)),
+      maxBpm: maxValue === null ? null : Number(maxValue.toFixed(1))
+    };
+  }
+  return rows;
+}
+
+function hasAnyHrZoneOverrides(rows) {
+  return Array.isArray(rows) && rows.some((row) => safeNumber(row?.minBpm) !== null || safeNumber(row?.maxBpm) !== null);
+}
+
+function buildZonesFromOverrideRows(rows) {
+  if (!Array.isArray(rows) || rows.length < HR_ZONE_COUNT) {
+    return [];
+  }
+  const zones = rows.slice(0, HR_ZONE_COUNT).map((row, idx) => {
+    const minValue = safeNumber(row?.minBpm);
+    const maxValue = safeNumber(row?.maxBpm);
+    return {
+      label: `Z${idx + 1}`,
+      minBpm: minValue !== null ? Number(minValue.toFixed(1)) : idx === 0 ? 0 : null,
+      maxBpm: maxValue !== null ? Number(maxValue.toFixed(1)) : idx === HR_ZONE_COUNT - 1 ? null : null
+    };
+  });
+  return isValidHrZones(zones) ? zones : [];
+}
+
+function applyHrZoneOverrides(baseZones, rows) {
+  if (!Array.isArray(baseZones) || baseZones.length < HR_ZONE_COUNT) {
+    return [];
+  }
+  const normalizedRows = normalizeHrZoneOverrideRows(rows);
+  const merged = baseZones.slice(0, HR_ZONE_COUNT).map((zone, idx) => ({
+    label: zone?.label || `Z${idx + 1}`,
+    minBpm: safeNumber(normalizedRows[idx]?.minBpm) !== null ? Number(normalizedRows[idx].minBpm) : Number(zone.minBpm),
+    maxBpm: safeNumber(normalizedRows[idx]?.maxBpm) !== null ? Number(normalizedRows[idx].maxBpm) : zone.maxBpm
+  }));
+  return isValidHrZones(merged) ? merged : [];
+}
+
+function normalizeSettings(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    apiKey: typeof source.apiKey === "string" ? source.apiKey.trim() : "",
+    runningThresholdHrOverride: normalizeThresholdOverride(source.runningThresholdHrOverride),
+    hrZonesRunningOverride: normalizeHrZoneOverrideRows(source.hrZonesRunningOverride)
+  };
+}
+
+function resolveRunningHrZoneConfiguration(defaultThresholdHr, settings) {
+  const normalizedSettings = normalizeSettings(settings);
+  const defaultThreshold = safeNumber(defaultThresholdHr);
+  const thresholdOverride = safeNumber(normalizedSettings.runningThresholdHrOverride);
+  const effectiveThreshold = thresholdOverride !== null ? Number(thresholdOverride) : defaultThreshold;
+  const defaultZones = buildFiveZonesFromThresholdHr(defaultThreshold);
+  const thresholdZones = buildFiveZonesFromThresholdHr(effectiveThreshold);
+  const zoneOverrides = normalizeHrZoneOverrideRows(normalizedSettings.hrZonesRunningOverride);
+  let effectiveZones = [];
+  if (thresholdZones.length) {
+    effectiveZones = hasAnyHrZoneOverrides(zoneOverrides) ? applyHrZoneOverrides(thresholdZones, zoneOverrides) : thresholdZones;
+  } else if (hasAnyHrZoneOverrides(zoneOverrides)) {
+    effectiveZones = buildZonesFromOverrideRows(zoneOverrides);
+  }
+  return {
+    defaultRunningThresholdHr: defaultThreshold === null ? null : Number(defaultThreshold.toFixed(1)),
+    runningThresholdHrOverride: thresholdOverride === null ? null : Number(thresholdOverride.toFixed(1)),
+    runningThresholdHr: effectiveThreshold === null ? null : Number(effectiveThreshold.toFixed(1)),
+    defaultHrZonesRunning: defaultZones,
+    hrZonesRunningOverride: zoneOverrides,
+    hrZonesRunning: effectiveZones
+  };
 }
 
 function fillCumulativeStreamGaps(values) {
@@ -557,6 +742,113 @@ function normalizeHrStream(hrRaw, targetLength) {
   }
 
   return values.map((value) => (value !== null && value >= 30 && value <= 240 ? value : null));
+}
+
+function normalizeScalarStream(raw, targetLength, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}) {
+  const values = raw.map((value) => safeNumber(value));
+  if (values.length !== targetLength) {
+    return Array.from({ length: targetLength }, () => null);
+  }
+
+  return values.map((value) => (value !== null && value >= min && value <= max ? value : null));
+}
+
+function normalizeCadenceStream(cadenceRaw, targetLength) {
+  const values = normalizeScalarStream(cadenceRaw, targetLength, { min: 20, max: 160 });
+  const finite = values.filter((value) => Number.isFinite(value));
+  if (!finite.length) {
+    return values;
+  }
+
+  const maxValue = Math.max(...finite);
+  const multiplier = maxValue <= 130 ? 2 : 1;
+  return values.map((value) => (Number.isFinite(value) ? Number((value * multiplier).toFixed(1)) : null));
+}
+
+function normalizeAltitudeStream(altitudeRaw, targetLength) {
+  return normalizeScalarStream(altitudeRaw, targetLength, { min: -1000, max: 10000 }).map((value) =>
+    Number.isFinite(value) ? Number(value.toFixed(1)) : null
+  );
+}
+
+function buildActivityDetailStreamPoints(activity, streamPayload) {
+  const distanceRaw = extractStreamArray(streamPayload, ["distance", "dist"]);
+  const timeRaw = extractStreamArray(streamPayload, ["time", "seconds", "moving_time"]);
+  const hrRaw = extractStreamArray(streamPayload, ["heartrate", "heart_rate", "hr"]);
+  const cadenceRaw = extractStreamArray(streamPayload, ["cadence", "run_cadence", "steps_per_minute"]);
+  const altitudeRaw = extractStreamArray(streamPayload, ["altitude", "elevation", "alt", "ele"]);
+  const targetLength = Math.max(distanceRaw.length, timeRaw.length, hrRaw.length, cadenceRaw.length, altitudeRaw.length);
+  if (targetLength < 2 || !timeRaw.length || !distanceRaw.length) {
+    return [];
+  }
+
+  const distanceM = normalizeDistanceStreamMeters(distanceRaw, activity.distanceKm);
+  if (distanceM.length !== targetLength) {
+    return [];
+  }
+
+  const timeS = normalizeTimeStreamSeconds(timeRaw, targetLength);
+  const hr = normalizeHrStream(hrRaw, targetLength);
+  const cadence = normalizeCadenceStream(cadenceRaw, targetLength);
+  const altitude = normalizeAltitudeStream(altitudeRaw, targetLength);
+  const rawPace = Array.from({ length: targetLength }, () => null);
+
+  for (let i = 1; i < targetLength; i += 1) {
+    const prevTime = Number(timeS[i - 1]);
+    const curTime = Number(timeS[i]);
+    const prevDist = Number(distanceM[i - 1]);
+    const curDist = Number(distanceM[i]);
+    const dt = curTime - prevTime;
+    const dd = curDist - prevDist;
+    if (!Number.isFinite(dt) || !Number.isFinite(dd) || dt <= 0 || dd <= 0.5) {
+      continue;
+    }
+    rawPace[i] = sanitizePaceMinKm((dt / 60) / (dd / 1000));
+  }
+
+  const smoothedPace = rawPace.map((_, i) => {
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(0, i - 2); j <= Math.min(targetLength - 1, i + 2); j += 1) {
+      const value = rawPace[j];
+      if (!Number.isFinite(value)) {
+        continue;
+      }
+      sum += value;
+      count += 1;
+    }
+    if (!count) {
+      return null;
+    }
+    return sanitizePaceMinKm(sum / count);
+  });
+
+  const points = [];
+
+  for (let i = 0; i < targetLength; i += 1) {
+    const elapsedSec = Number.isFinite(timeS[i]) ? Math.max(0, timeS[i]) : i;
+
+    points.push({
+      elapsedSec: Number(elapsedSec.toFixed(1)),
+      distanceKm: Number((Number(distanceM[i]) / 1000).toFixed(3)),
+      paceMinKm: smoothedPace[i],
+      hrBpm: Number.isFinite(hr[i]) ? Number(hr[i].toFixed(1)) : null,
+      cadenceSpm: Number.isFinite(cadence[i]) ? Number(cadence[i].toFixed(1)) : null,
+      altitudeM: Number.isFinite(altitude[i]) ? Number(altitude[i].toFixed(1)) : null
+    });
+  }
+
+  if (points.length <= 1200) {
+    return points;
+  }
+
+  const reduced = [];
+  const lastIndex = points.length - 1;
+  for (let i = 0; i < 1200; i += 1) {
+    const sourceIndex = Math.round((i / 1199) * lastIndex);
+    reduced.push(points[sourceIndex]);
+  }
+  return reduced;
 }
 
 function buildPerKmSplitPoints(activity, streamPayload) {
@@ -731,6 +1023,7 @@ function sleep(ms) {
 async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
   const auth = Buffer.from(`API_KEY:${apiKey}`, "utf8").toString("base64");
   let lastError = null;
+  const endpoint = `${label} ${url.toString()}`;
 
   for (let attempt = 0; attempt <= ACTIVITY_FETCH_MAX_RETRIES; attempt += 1) {
     try {
@@ -749,6 +1042,10 @@ async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
         const body = await response.text();
         const shortBody = body.length > 200 ? `${body.slice(0, 200)}...` : body;
         const retryable = isRetryableStatus(response.status);
+        console.error(
+          `[fitboard] ${endpoint} failed (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
+            ` status=${response.status} retryable=${retryable} target=${activityId} body=${shortBody || response.statusText}`
+        );
         lastError = new Error(
           `${label} API ${response.status} for activity ${activityId}: ${shortBody || response.statusText}`
         );
@@ -767,6 +1064,10 @@ async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
       return { unsupported: false, payload: await response.json() };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      console.error(
+        `[fitboard] ${endpoint} request error (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
+          ` target=${activityId}: ${lastError.message}`
+      );
       if (attempt >= ACTIVITY_FETCH_MAX_RETRIES) {
         throw lastError;
       }
@@ -784,10 +1085,221 @@ async function fetchActivityWithIntervals(apiKey, activityId) {
   return fetchActivityJsonWithRetry(apiKey, url, activityId, "Activity");
 }
 
+async function fetchAthleteProfile(apiKey) {
+  const url = new URL("https://intervals.icu/api/v1/athlete/0");
+  return fetchActivityJsonWithRetry(apiKey, url, "athlete", "Athlete");
+}
+
 async function fetchActivityStreams(apiKey, activityId) {
   const url = new URL(`https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}/streams.json`);
-  url.searchParams.set("types", "distance,time,heartrate");
+  url.searchParams.set("types", "distance,time,heartrate,cadence,altitude");
   return fetchActivityJsonWithRetry(apiKey, url, activityId, "Streams");
+}
+
+function zoneEdgeListToZones(edges) {
+  const thresholds = Array.from(
+    new Set(
+      edges
+        .map((value) => safeNumber(value))
+        .filter((value) => value !== null && value > 0 && value < 260)
+        .map((value) => Number(value.toFixed(1)))
+    )
+  ).sort((a, b) => a - b);
+  if (thresholds.length < HR_ZONE_COUNT - 1) {
+    return [];
+  }
+
+  // Intervals may provide more than 5 zones (e.g. 7 boundaries).
+  // For 5-zone charts, anchor to the lower boundaries so Z1 does not become overly wide.
+  const chosen = thresholds.slice(0, HR_ZONE_COUNT - 1);
+  const zones = [];
+  let min = 0;
+  for (let i = 0; i < HR_ZONE_COUNT; i += 1) {
+    const max = i < chosen.length ? chosen[i] : null;
+    zones.push({
+      label: `Z${i + 1}`,
+      minBpm: Number(min.toFixed(1)),
+      maxBpm: Number.isFinite(max) ? Number(max.toFixed(1)) : null
+    });
+    if (Number.isFinite(max)) {
+      min = max;
+    }
+  }
+  return zones;
+}
+
+function isValidHrZones(zones) {
+  if (!Array.isArray(zones) || zones.length < HR_ZONE_COUNT) {
+    return false;
+  }
+  const normalized = zones.slice(0, HR_ZONE_COUNT);
+  let previousMin = -Infinity;
+  const finiteMax = [];
+  for (const zone of normalized) {
+    const minBpm = safeNumber(zone?.minBpm);
+    const maxBpm = safeNumber(zone?.maxBpm);
+    if (!Number.isFinite(minBpm)) {
+      return false;
+    }
+    if (minBpm < previousMin) {
+      return false;
+    }
+    previousMin = minBpm;
+    if (Number.isFinite(maxBpm)) {
+      finiteMax.push(maxBpm);
+      if (maxBpm < minBpm) {
+        return false;
+      }
+    }
+  }
+  if (finiteMax.length < HR_ZONE_COUNT - 1) {
+    return false;
+  }
+  const firstBoundary = finiteMax[0];
+  const topBoundary = finiteMax[finiteMax.length - 1];
+  return firstBoundary >= 80 && topBoundary >= 130 && topBoundary <= 240;
+}
+
+function extractRunningThresholdHrBpm(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const directCandidates = [
+    payload.runningThresholdHr,
+    payload.running_threshold_hr,
+    payload.runningThresholdHeartrate,
+    payload.running_threshold_heartrate,
+    payload.runThresholdHr,
+    payload.run_threshold_hr,
+    payload.lthr,
+    payload.run_lthr,
+    payload.running?.thresholdHr,
+    payload.running?.threshold_hr,
+    payload.running?.lthr
+  ];
+  for (const candidate of directCandidates) {
+    const value = safeNumber(candidate);
+    if (value !== null && value >= 120 && value <= 240) {
+      return Number(value.toFixed(1));
+    }
+  }
+
+  const stack = [payload];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") {
+      continue;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      const lowered = key.toLowerCase();
+      if (
+        (lowered.includes("lthr") || (lowered.includes("threshold") && lowered.includes("hr")) || lowered.includes("heart_rate_threshold")) &&
+        Number.isFinite(Number(value))
+      ) {
+        const numeric = Number(value);
+        if (numeric >= 120 && numeric <= 240) {
+          return Number(numeric.toFixed(1));
+        }
+      }
+      if (value && typeof value === "object") {
+        stack.push(value);
+      }
+    }
+  }
+  return null;
+}
+
+function convertPercentEdgesToBpmZones(percentEdges, thresholdHrBpm) {
+  if (!Number.isFinite(thresholdHrBpm) || thresholdHrBpm < 120 || thresholdHrBpm > 240) {
+    return [];
+  }
+  const bpmEdges = percentEdges
+    .map((value) => safeNumber(value))
+    .filter((value) => value !== null && value > 0 && value <= 100)
+    .map((pct) => Number(((pct / 100) * thresholdHrBpm).toFixed(1)));
+  const zones = zoneEdgeListToZones(bpmEdges);
+  return isValidHrZones(zones) ? zones : [];
+}
+
+function buildFiveZonesFromThresholdHr(thresholdHrBpm) {
+  if (!Number.isFinite(thresholdHrBpm) || thresholdHrBpm < 120 || thresholdHrBpm > 240) {
+    return [];
+  }
+  return convertPercentEdgesToBpmZones(DEFAULT_LTHR_ZONE_EDGE_PCTS, thresholdHrBpm);
+}
+
+function hrZoneIndexForBpm(zones, bpm) {
+  if (!Array.isArray(zones) || !zones.length || !Number.isFinite(bpm)) {
+    return -1;
+  }
+  for (let i = 0; i < zones.length; i += 1) {
+    const zone = zones[i];
+    const minBpm = safeNumber(zone?.minBpm);
+    const maxBpm = safeNumber(zone?.maxBpm);
+    const minOk = Number.isFinite(minBpm) ? bpm >= minBpm : true;
+    const maxOk = Number.isFinite(maxBpm) ? bpm < maxBpm : true;
+    if (minOk && maxOk) {
+      return i;
+    }
+  }
+  return zones.length - 1;
+}
+
+function computeRunHrZoneDurations(activity, zones) {
+  if (!Array.isArray(zones) || !zones.length) {
+    return [];
+  }
+  const zoneSeconds = Array.from({ length: zones.length }, () => 0);
+
+  const streamPoints = Array.isArray(activity?.detailStreamPoints) ? activity.detailStreamPoints : [];
+  if (streamPoints.length >= 2) {
+    for (let i = 1; i < streamPoints.length; i += 1) {
+      const prevSec = Number(streamPoints[i - 1]?.elapsedSec);
+      const curSec = Number(streamPoints[i]?.elapsedSec);
+      const dt = curSec - prevSec;
+      if (!Number.isFinite(dt) || dt <= 0 || dt > 180) {
+        continue;
+      }
+      const hrBpm = Number(streamPoints[i]?.hrBpm);
+      const zoneIndex = hrZoneIndexForBpm(zones, hrBpm);
+      if (zoneIndex >= 0) {
+        zoneSeconds[zoneIndex] += dt;
+      }
+    }
+  }
+
+  if (zoneSeconds.some((value) => value > 0)) {
+    return zoneSeconds.map((value) => Math.max(0, Math.round(value)));
+  }
+
+  const intervalPoints = Array.isArray(activity?.intervalPoints) ? activity.intervalPoints : [];
+  if (intervalPoints.length) {
+    for (const interval of intervalPoints) {
+      const seconds = Number(interval?.movingTimeSec);
+      const hrBpm = Number(interval?.avgHrBpm);
+      if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isFinite(hrBpm)) {
+        continue;
+      }
+      const zoneIndex = hrZoneIndexForBpm(zones, hrBpm);
+      if (zoneIndex >= 0) {
+        zoneSeconds[zoneIndex] += seconds;
+      }
+    }
+  }
+
+  if (zoneSeconds.some((value) => value > 0)) {
+    return zoneSeconds.map((value) => Math.max(0, Math.round(value)));
+  }
+
+  const movingTimeSec = Number(activity?.movingTimeSec);
+  const avgHrBpm = Number(activity?.avgHrBpm);
+  if (Number.isFinite(movingTimeSec) && movingTimeSec > 0 && Number.isFinite(avgHrBpm)) {
+    const zoneIndex = hrZoneIndexForBpm(zones, avgHrBpm);
+    if (zoneIndex >= 0) {
+      zoneSeconds[zoneIndex] = Math.round(movingTimeSec);
+    }
+  }
+  return zoneSeconds.map((value) => Math.max(0, Math.round(value)));
 }
 
 async function enrichActivitiesWithPaceHrPoints(apiKey, activities) {
@@ -830,6 +1342,8 @@ async function enrichActivitiesWithPaceHrPoints(apiKey, activities) {
         movingTimeSec: activity.movingTimeSec,
         elevationGainM: activity.elevationGainM,
         avgTempC: activity.avgTempC,
+        maxHrBpm: activity.maxHrBpm,
+        load: activity.load,
         metaSourceVersion: activity.metaSourceVersion,
         intervalPoints: Array.isArray(activity.intervalPoints) ? activity.intervalPoints : [],
         intervalSourceVersion: activity.intervalSourceVersion,
@@ -858,6 +1372,8 @@ async function enrichActivitiesWithPaceHrPoints(apiKey, activities) {
           activity.movingTimeSec = normalizeMovingTimeSec(detailPayload, normalizeMovingTimeSec(activity, null));
           activity.elevationGainM = normalizeElevationGainM(detailPayload, normalizeElevationGainM(activity, null));
           activity.avgTempC = normalizeAvgTempC(detailPayload, normalizeAvgTempC(activity, null));
+          activity.maxHrBpm = normalizeMaxHrBpm(detailPayload, normalizeMaxHrBpm(activity, null));
+          activity.load = normalizeLoad(detailPayload, normalizeLoad(activity, null));
           activity.metaSourceVersion = ACTIVITY_META_SOURCE_VERSION;
 
           const intervalPoints = buildIntervalPoints(activity, detailPayload);
@@ -1013,6 +1529,8 @@ function normalizeActivities(items, existingById = new Map()) {
     const movingTimeSec = normalizeMovingTimeSec(item, normalizeMovingTimeSec(existingByRawId, null));
     const elevationGainM = normalizeElevationGainM(item, normalizeElevationGainM(existingByRawId, null));
     const avgTempC = normalizeAvgTempC(item, normalizeAvgTempC(existingByRawId, null));
+    const maxHrBpm = normalizeMaxHrBpm(item, normalizeMaxHrBpm(existingByRawId, null));
+    const load = normalizeLoad(item, normalizeLoad(existingByRawId, null));
     const startDateTime = normalizeActivityStartDateTime(item, normalizeActivityStartDateTime(existingByRawId, ""));
     if (!startDateTime) {
       continue;
@@ -1028,11 +1546,17 @@ function normalizeActivities(items, existingById = new Map()) {
       cached?.intervalSourceVersion === INTERVAL_SOURCE_VERSION && Array.isArray(cached?.intervalPoints) ? cached.intervalPoints : [];
     const cachedSplits =
       cached?.splitSourceVersion === SPLIT_SOURCE_VERSION && Array.isArray(cached?.splitKmPoints) ? cached.splitKmPoints : [];
+    const cachedDetailStreams =
+      cached?.detailStreamSourceVersion === DETAIL_STREAM_SOURCE_VERSION && Array.isArray(cached?.detailStreamPoints)
+        ? cached.detailStreamPoints
+        : [];
     const resolvedName = normalizeActivityName(item, normalizeActivityName(cached, null));
     const resolvedStartDateTime = normalizeActivityStartDateTime(item, normalizeActivityStartDateTime(cached, startDateTime));
     const resolvedMovingTimeSec = normalizeMovingTimeSec(item, normalizeMovingTimeSec(cached, movingTimeSec));
     const resolvedElevationGainM = normalizeElevationGainM(item, normalizeElevationGainM(cached, elevationGainM));
     const resolvedAvgTempC = normalizeAvgTempC(item, normalizeAvgTempC(cached, avgTempC));
+    const resolvedMaxHrBpm = normalizeMaxHrBpm(item, normalizeMaxHrBpm(cached, maxHrBpm));
+    const resolvedLoad = normalizeLoad(item, normalizeLoad(cached, load));
     const cachedMetaVersion = Number(cached?.metaSourceVersion);
     const resolvedMetaVersion =
       Number.isFinite(cachedMetaVersion) && Math.round(cachedMetaVersion) === ACTIVITY_META_SOURCE_VERSION
@@ -1047,6 +1571,8 @@ function normalizeActivities(items, existingById = new Map()) {
       movingTimeSec: resolvedMovingTimeSec,
       elevationGainM: resolvedElevationGainM,
       avgTempC: resolvedAvgTempC,
+      maxHrBpm: resolvedMaxHrBpm,
+      load: resolvedLoad,
       metaSourceVersion: resolvedMetaVersion,
       type: item.type,
       distanceKm: Number(km.toFixed(3)),
@@ -1056,7 +1582,9 @@ function normalizeActivities(items, existingById = new Map()) {
       intervalSourceVersion: cached?.intervalSourceVersion ?? 0,
       intervalPoints: cachedIntervals,
       splitSourceVersion: cached?.splitSourceVersion ?? 0,
-      splitKmPoints: cachedSplits
+      splitKmPoints: cachedSplits,
+      detailStreamSourceVersion: cached?.detailStreamSourceVersion ?? 0,
+      detailStreamPoints: cachedDetailStreams
     });
   }
 
@@ -1331,6 +1859,15 @@ function deriveIncrementalOldestDate(currentData, previousActivities, fallbackLo
   return "1970-01-01";
 }
 
+function deriveUpdateOldestDate(previousActivities, newestDate) {
+  const latestExistingDate = latestActivityDateKey(previousActivities);
+  const minRecentDate = formatDateUTC(addDaysUTC(parseDateKey(newestDate), -30));
+  if (latestExistingDate && isDateKey(latestExistingDate)) {
+    return latestExistingDate < minRecentDate ? latestExistingDate : minRecentDate;
+  }
+  return minRecentDate;
+}
+
 function mergeActivitiesById(existingActivities, fetchedActivities) {
   const byId = new Map();
 
@@ -1411,25 +1948,98 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/settings" && req.method === "GET") {
-    const settings = await readJson(SETTINGS_FILE, { apiKey: "" });
+    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
     const hasApiKey = typeof settings.apiKey === "string" && settings.apiKey.length > 0;
-    return jsonResponse(res, 200, { hasApiKey });
+    return jsonResponse(res, 200, {
+      hasApiKey,
+      runningThresholdHrOverride: settings.runningThresholdHrOverride,
+      hrZonesRunningOverride: settings.hrZonesRunningOverride
+    });
   }
 
   if (url.pathname === "/api/settings" && req.method === "PUT") {
     try {
       const body = await parseJsonBody(req);
-      const apiKey = String(body.apiKey || "").trim();
+      const currentSettings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
+      const nextSettings = {
+        ...currentSettings
+      };
+      if (Object.prototype.hasOwnProperty.call(body, "apiKey")) {
+        nextSettings.apiKey = String(body.apiKey || "").trim();
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "runningThresholdHrOverride")) {
+        nextSettings.runningThresholdHrOverride = normalizeThresholdOverride(body.runningThresholdHrOverride);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, "hrZonesRunningOverride")) {
+        nextSettings.hrZonesRunningOverride = normalizeHrZoneOverrideRows(body.hrZonesRunningOverride);
+      }
 
-      await writeJson(SETTINGS_FILE, { apiKey });
-      return jsonResponse(res, 200, { ok: true, hasApiKey: apiKey.length > 0 });
-    } catch {
-      return jsonResponse(res, 400, { error: "Invalid JSON body." });
+      const activityData = await readJson(ACTIVITIES_FILE, {
+        syncedAt: null,
+        lookbackMode: "days",
+        lookbackDays: 365,
+        runningThresholdHr: null,
+        activities: []
+      });
+      const resolved = resolveRunningHrZoneConfiguration(activityData?.runningThresholdHr, nextSettings);
+      const hasOverrides =
+        resolved.runningThresholdHrOverride !== null || hasAnyHrZoneOverrides(resolved.hrZonesRunningOverride);
+      if (hasOverrides && !resolved.hrZonesRunning.length) {
+        return jsonResponse(res, 400, {
+          error:
+            "Overrides do not produce a valid 5-zone setup. Provide a threshold override or a complete set of zone overrides."
+        });
+      }
+
+      await writeJson(SETTINGS_FILE, nextSettings);
+      return jsonResponse(res, 200, {
+        ok: true,
+        hasApiKey: nextSettings.apiKey.length > 0,
+        runningThresholdHrOverride: nextSettings.runningThresholdHrOverride,
+        hrZonesRunningOverride: nextSettings.hrZonesRunningOverride
+      });
+    } catch (error) {
+      return jsonResponse(res, 400, { error: error.message || "Invalid settings payload." });
     }
   }
 
+  if (url.pathname === "/api/local-data/reset" && req.method === "POST") {
+    let body = {};
+    try {
+      body = await parseJsonBody(req);
+    } catch {
+      return jsonResponse(res, 400, { error: "Invalid JSON body." });
+    }
+
+    const mode = String(body.mode || "").toLowerCase();
+    if (mode !== "clear-activities" && mode !== "delete-all") {
+      return jsonResponse(res, 400, { error: "Invalid reset mode." });
+    }
+
+    const emptyActivities = {
+      syncedAt: null,
+      lookbackMode: "days",
+      lookbackDays: 365,
+      runningThresholdHr: null,
+      hrZonesRunning: [],
+      activities: []
+    };
+    if (mode === "delete-all") {
+      await writeJson(SETTINGS_FILE, defaultSettings());
+    }
+    await writeJson(ACTIVITIES_FILE, emptyActivities);
+
+    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
+    const hasApiKey = typeof settings.apiKey === "string" && settings.apiKey.length > 0;
+    return jsonResponse(res, 200, {
+      ok: true,
+      mode,
+      hasApiKey
+    });
+  }
+
   if (url.pathname === "/api/sync" && req.method === "POST") {
-    const settings = await readJson(SETTINGS_FILE, { apiKey: "" });
+    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
     const apiKey = String(settings.apiKey || "").trim();
 
     if (!apiKey) {
@@ -1444,57 +2054,81 @@ async function handleApi(req, res, url) {
     }
 
     const requestedMode = String(body.mode || "").toLowerCase();
-    const requested = body.lookbackDays;
-    const wantsExplicitRange = requested === "all" || Number.isFinite(Number(requested));
-    const syncMode = requestedMode === "range" || requestedMode === "incremental"
-      ? requestedMode
-      : wantsExplicitRange
-        ? "range"
-        : "incremental";
-    const requestedLookbackDays = normalizeLookbackDaysValue(requested, 365);
-    const requestedLookbackMode = requested === "all" ? "all" : "days";
+    const syncMode =
+      requestedMode === "fetch-all" || requestedMode === "reload-all" || requestedMode === "all" || requestedMode === "range"
+        ? "fetch-all"
+        : "update";
 
     try {
-      const currentData = await readJson(ACTIVITIES_FILE, { syncedAt: null, lookbackMode: "days", lookbackDays: 365, activities: [] });
+      const currentData = await readJson(ACTIVITIES_FILE, {
+        syncedAt: null,
+        lookbackMode: "days",
+        lookbackDays: 365,
+        runningThresholdHr: null,
+        activities: []
+      });
       const previousActivities = Array.isArray(currentData.activities) ? currentData.activities : [];
       const previousById = new Map(previousActivities.map((activity) => [String(activity.id || ""), activity]));
 
       const newestDate = formatDateUTC(new Date());
       let activities = [];
       let fetchedActivities = [];
-      let lookbackMode = requestedLookbackMode;
-      let lookbackDays = requestedLookbackDays;
+      let lookbackMode = currentData?.lookbackMode === "all" ? "all" : "days";
+      let lookbackDays = normalizeLookbackDaysValue(currentData?.lookbackDays, 365);
       let syncOldestDate = "1970-01-01";
       let syncNewestDate = newestDate;
 
-      if (syncMode === "incremental") {
-        const storedLookback = resolveStoredLookbackInfo(currentData);
-        lookbackMode = storedLookback.lookbackMode;
-        lookbackDays = storedLookback.lookbackDays;
-
-        if (lookbackMode !== "all" && !Number.isFinite(lookbackDays)) {
-          lookbackMode = requestedLookbackMode;
-          lookbackDays = requestedLookbackDays;
-        }
-
-        syncOldestDate = deriveIncrementalOldestDate(currentData, previousActivities, requestedLookbackDays, newestDate);
+      if (syncMode === "update") {
+        syncOldestDate = deriveUpdateOldestDate(previousActivities, newestDate);
         fetchedActivities = await fetchIntervalsActivitiesInRange(apiKey, syncOldestDate, syncNewestDate, previousById);
         activities = mergeActivitiesById(previousActivities, fetchedActivities);
       } else {
-        syncOldestDate =
-          Number.isFinite(lookbackDays) && lookbackDays > 0
-            ? formatDateUTC(addDaysUTC(parseDateKey(newestDate), -Math.round(lookbackDays)))
-            : "1970-01-01";
+        syncOldestDate = "1970-01-01";
         fetchedActivities = await fetchIntervalsActivitiesInRange(apiKey, syncOldestDate, syncNewestDate, previousById);
         activities = fetchedActivities;
+        lookbackMode = "all";
+        lookbackDays = null;
       }
 
       const splitStats = await enrichActivitiesWithPaceHrPoints(apiKey, activities);
+      let runningThresholdHr = safeNumber(currentData?.runningThresholdHr);
+      let hrZonesRunning = buildFiveZonesFromThresholdHr(runningThresholdHr);
+      try {
+        const { unsupported: athleteUnsupported, payload: athletePayload } = await fetchAthleteProfile(apiKey);
+        if (!athleteUnsupported) {
+          const fetchedThresholdHr = extractRunningThresholdHrBpm(athletePayload);
+          if (Number.isFinite(fetchedThresholdHr)) {
+            runningThresholdHr = fetchedThresholdHr;
+          }
+          const fetchedZones = buildFiveZonesFromThresholdHr(runningThresholdHr);
+          if (fetchedZones.length) {
+            hrZonesRunning = fetchedZones;
+            console.log(
+              `[fitboard] athlete HR zones rebuilt from running LTHR ${runningThresholdHr}: ${fetchedZones
+                .map((zone) => `${zone.label}:${zone.minBpm}-${zone.maxBpm ?? "+"}`)
+                .join(", ")}`
+            );
+          } else {
+            console.error(
+              `[fitboard] athlete profile fetched but running threshold HR was unavailable or invalid.` +
+                ` runningThresholdHr=${runningThresholdHr ?? "n/a"}`
+            );
+          }
+        } else {
+          console.error("[fitboard] athlete profile endpoint unsupported (404). Running HR zones not updated.");
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[fitboard] athlete profile fetch failed. Running HR zones not updated: ${message}`);
+        // Keep previous zones when athlete profile fetch fails.
+      }
       const payload = {
         syncedAt: new Date().toISOString(),
         lookbackMode,
         lookbackDays,
-        activities
+        runningThresholdHr: Number.isFinite(runningThresholdHr) ? Number(runningThresholdHr.toFixed(1)) : null,
+        activities,
+        hrZonesRunning
       };
 
       await writeJson(ACTIVITIES_FILE, payload);
@@ -1520,8 +2154,18 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/series" && req.method === "GET") {
-    const data = await readJson(ACTIVITIES_FILE, { syncedAt: null, lookbackMode: "days", lookbackDays: 365, activities: [] });
+    const data = await readJson(ACTIVITIES_FILE, {
+      syncedAt: null,
+      lookbackMode: "days",
+      lookbackDays: 365,
+      runningThresholdHr: null,
+      activities: []
+    });
+    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
     const activities = Array.isArray(data.activities) ? data.activities : [];
+    const zoneConfig = resolveRunningHrZoneConfiguration(data?.runningThresholdHr, settings);
+    const runningThresholdHr = zoneConfig.runningThresholdHr;
+    const hrZonesRunning = zoneConfig.hrZonesRunning;
     const lookbackMode = data.lookbackMode === "all" || data.lookbackDays === "all" ? "all" : "days";
     const requestedLookback = Number(data.lookbackDays ?? 365);
     const lookbackDays =
@@ -1532,11 +2176,27 @@ async function handleApi(req, res, url) {
           : 365;
     const { series, latest } = computeRollingSeries(activities, lookbackDays);
     const paceHrPoints = collectPaceHrPoints(activities);
+    const staleMetaCount = activities.reduce((count, activity) => {
+      const metaVersion = Number(activity?.metaSourceVersion);
+      return count + (Number.isFinite(metaVersion) && Math.round(metaVersion) === ACTIVITY_META_SOURCE_VERSION ? 0 : 1);
+    }, 0);
+    const hrZonesMissing = activities.length > 0 && !hrZonesRunning.length;
+    const resyncNeeded = staleMetaCount > 0 || hrZonesMissing;
 
     return jsonResponse(res, 200, {
       syncedAt: data.syncedAt || null,
       activityCount: activities.length,
       lookbackDays: lookbackMode === "all" ? "all" : lookbackDays,
+      activityMetaSourceVersion: ACTIVITY_META_SOURCE_VERSION,
+      staleActivityMetaCount: staleMetaCount,
+      hrZonesMissing,
+      resyncNeeded,
+      defaultRunningThresholdHr: zoneConfig.defaultRunningThresholdHr,
+      runningThresholdHrOverride: zoneConfig.runningThresholdHrOverride,
+      runningThresholdHr,
+      defaultHrZonesRunning: zoneConfig.defaultHrZonesRunning,
+      hrZonesRunningOverride: zoneConfig.hrZonesRunningOverride,
+      hrZonesRunning,
       paceHrPoints,
       runs: activities.map((activity) => ({
         id: activity.id,
@@ -1549,6 +2209,9 @@ async function handleApi(req, res, url) {
         elevationGainM: Number.isFinite(Number(activity.elevationGainM)) ? Number(activity.elevationGainM) : null,
         avgTempC: Number.isFinite(Number(activity.avgTempC)) ? Number(activity.avgTempC) : null,
         avgHrBpm: Number.isFinite(Number(activity.avgHrBpm)) ? Number(activity.avgHrBpm) : null,
+        maxHrBpm: Number.isFinite(Number(activity.maxHrBpm)) ? Number(activity.maxHrBpm) : null,
+        load: Number.isFinite(Number(activity.load)) ? Number(activity.load) : null,
+        hrZoneDurationsSec: computeRunHrZoneDurations(activity, hrZonesRunning),
         paceMinKm:
           activity.paceSourceVersion === PACE_SOURCE_VERSION && Number.isFinite(Number(activity.paceMinKm))
             ? Number(activity.paceMinKm)
@@ -1574,9 +2237,37 @@ async function handleApi(req, res, url) {
 
     const data = await readJson(ACTIVITIES_FILE, { syncedAt: null, lookbackMode: "days", lookbackDays: 365, activities: [] });
     const activities = Array.isArray(data.activities) ? data.activities : [];
-    const activity = activities.find((item) => String(item?.id || "") === activityId);
+    const activityIndex = activities.findIndex((item) => String(item?.id || "") === activityId);
+    const activity = activityIndex >= 0 ? activities[activityIndex] : null;
     if (!activity) {
       return jsonResponse(res, 404, { error: "Activity not found." });
+    }
+
+    let detailStreamPoints =
+      activity.detailStreamSourceVersion === DETAIL_STREAM_SOURCE_VERSION && Array.isArray(activity.detailStreamPoints)
+        ? activity.detailStreamPoints
+        : [];
+    if (!detailStreamPoints.length || activity.detailStreamSourceVersion !== DETAIL_STREAM_SOURCE_VERSION) {
+      const settings = await readJson(SETTINGS_FILE, { apiKey: "" });
+      const apiKey = String(settings.apiKey || "").trim();
+      if (apiKey) {
+        try {
+          const { unsupported, payload } = await fetchActivityStreams(apiKey, activity.id);
+          if (unsupported) {
+            detailStreamPoints = [];
+            activity.detailStreamSourceVersion = DETAIL_STREAM_SOURCE_VERSION;
+            activity.detailStreamPoints = [];
+          } else {
+            detailStreamPoints = buildActivityDetailStreamPoints(activity, payload);
+            activity.detailStreamSourceVersion = DETAIL_STREAM_SOURCE_VERSION;
+            activity.detailStreamPoints = detailStreamPoints;
+          }
+          activities[activityIndex] = activity;
+          await writeJson(ACTIVITIES_FILE, data);
+        } catch {
+          detailStreamPoints = Array.isArray(activity.detailStreamPoints) ? activity.detailStreamPoints : [];
+        }
+      }
     }
 
     const lookbackMode = data.lookbackMode === "all" || data.lookbackDays === "all" ? "all" : "days";
@@ -1619,11 +2310,14 @@ async function handleApi(req, res, url) {
             ? Number(activity.paceMinKm)
             : null,
         avgHrBpm: Number.isFinite(Number(activity.avgHrBpm)) ? Number(activity.avgHrBpm) : null,
+        maxHrBpm: Number.isFinite(Number(activity.maxHrBpm)) ? Number(activity.maxHrBpm) : null,
         elevationGainM: Number.isFinite(Number(activity.elevationGainM)) ? Number(activity.elevationGainM) : null,
-        avgTempC: Number.isFinite(Number(activity.avgTempC)) ? Number(activity.avgTempC) : null
+        avgTempC: Number.isFinite(Number(activity.avgTempC)) ? Number(activity.avgTempC) : null,
+        load: Number.isFinite(Number(activity.load)) ? Number(activity.load) : null
       },
       intervalPoints: Array.isArray(activity.intervalPoints) ? activity.intervalPoints : [],
       splitKmPoints: Array.isArray(activity.splitKmPoints) ? activity.splitKmPoints : [],
+      detailStreamPoints: Array.isArray(detailStreamPoints) ? detailStreamPoints : [],
       baselineContext: {
         date: isDateKey(activity.date) ? activity.date : null,
         sum7,
