@@ -946,7 +946,7 @@ button:disabled {
 
 .foundation-row {
   display: grid;
-  grid-template-columns: minmax(0, 82px) minmax(0, 1fr) 104px;
+  grid-template-columns: minmax(0, 112px) minmax(0, 1fr) 104px;
   align-items: center;
   gap: 8px;
 }
@@ -954,6 +954,7 @@ button:disabled {
 .foundation-label {
   color: #587069;
   font-size: 0.76rem;
+  white-space: nowrap;
 }
 
 .foundation-bar-track {

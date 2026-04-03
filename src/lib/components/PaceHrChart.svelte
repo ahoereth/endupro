@@ -455,8 +455,8 @@
       {#if usableAll.length}
         {usable.length === usableAll.length
           ? `${usable.length} points`
-          : `${usable.length}/${usableAll.length} points in current pace window`}
-        · Corr {correlation !== null ? correlation.toFixed(2) : "n/a"}
+          : `${usable.length}/${usableAll.length} points`}
+        · Correlation {correlation !== null ? correlation.toFixed(2) : "n/a"}
       {:else}
         No points in range
       {/if}

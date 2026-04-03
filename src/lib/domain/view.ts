@@ -696,7 +696,15 @@ export function buildFoundations(
       {
         title: "Weekday",
         ...buildCategoricalDistribution(
-          ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+          [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+          ],
           weekdayIndices,
           7,
         ),

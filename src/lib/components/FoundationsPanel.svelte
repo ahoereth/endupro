@@ -15,7 +15,7 @@
 
 <section class="card foundational-stats-panel">
   <div class="chart-header">
-    <h2>Range Foundations</h2>
+    <h2>Fundamentals</h2>
     <p>{foundations?.summary || ""}</p>
   </div>
 
