@@ -119,6 +119,23 @@
   let urlStateSnapshot = "";
   let lastUrlStateKey = "";
 
+  onMount(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (mobileMenuOpen) {
+        mobileMenuOpen = false;
+      }
+      if (detail) {
+        closeDetail();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  });
+
   function applySyncState(patch: {
     status?: string;
     syncBusy?: boolean;
