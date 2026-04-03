@@ -113,9 +113,9 @@
 
   $: chartOption = {
     animation: false,
-    grid: { left: 72, right: 28, top: 52, bottom: 86 },
+    grid: { left: 0, right: 0, top: 30, bottom: 100, containLabel: true },
     legend: {
-      top: 0,
+      bottom: 0,
       selected: legendSelected,
       data: [...lineMeta.map((line) => line.label), rampCapLabel],
       textStyle: {
@@ -139,7 +139,7 @@
         interval: (index: number) => isMonthBoundary(index),
       },
       axisLabel: {
-        rotate: 35,
+        rotate: 90,
         interval: (index: number) => isMonthBoundary(index),
         formatter: (value: string) => formatMonthTick(value),
       },
@@ -147,8 +147,12 @@
     yAxis: {
       type: "value",
       name: "Distance (km)",
-      nameLocation: "middle",
-      nameGap: 56,
+      nameLocation: "end",
+      nameGap: 10,
+      nameRotate: 0,
+      nameTextStyle: {
+        padding: [0, 0, 0, 30],
+      },
       min: 0,
     },
     series: [

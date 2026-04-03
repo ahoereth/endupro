@@ -986,6 +986,18 @@ button:disabled {
   }
 }
 
+@media (max-width: 900px) {
+  .heatmap-y-axis-heading {
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+  }
+
+  .chart-wrap,
+  .chart {
+    width: 100%;
+  }
+}
+
 .monotony-viz {
   position: relative;
   margin-top: 10px;

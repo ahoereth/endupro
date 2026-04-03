@@ -181,7 +181,7 @@
       : ["#fee2e2", "#b91c1c"];
   $: chartOption = {
     animation: false,
-    grid: { left: 102, right: 28, top: 24, bottom: 86 },
+    grid: { left: 0, right: 0, top: 28, bottom: 30, containLabel: true },
     tooltip: {
       position: "top",
       formatter: (params: { data?: { value?: unknown } }) => {
@@ -204,12 +204,23 @@
       inverse: false,
       name: "Week",
       nameLocation: "middle",
-      nameGap: 62,
+      nameGap: 54,
       data: model.weekKeys,
       splitArea: { show: true },
+      showMaxLabel: false,
       axisLabel: {
         rotate: 35,
-        interval: (index: number) => isWeekMonthBoundary(index),
+        interval: (index: number) => {
+          const maxLabels =
+            typeof window === "undefined"
+              ? 6
+              : Math.max(3, Math.floor(window.innerWidth / 96));
+          const step = Math.max(
+            1,
+            Math.ceil(model.weekKeys.length / maxLabels),
+          );
+          return index % step === 0 && isWeekMonthBoundary(index);
+        },
         formatter: (value: string) => formatMonthTick(value),
       },
     },
@@ -217,8 +228,9 @@
       type: "category",
       inverse: true,
       name: "Pace (min/km)",
-      nameLocation: "middle",
-      nameGap: 72,
+      nameLocation: "start",
+      nameGap: 10,
+      nameRotate: 0,
       data: model.bins.map((bin) =>
         formatPace((bin * binSeconds) / 60).replace(" /km", ""),
       ),
@@ -323,6 +335,7 @@
       {model.weekKeys.length ? `${model.weekKeys.length} weeks` : "No data"}
     </p>
   </div>
+
   {#if resolvedColorRange.min !== null && resolvedColorRange.max !== null}
     <div class="scrub-row">
       <label for="hr-color-saturation">HR color saturation</label>

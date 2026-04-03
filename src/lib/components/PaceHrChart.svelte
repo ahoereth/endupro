@@ -214,10 +214,17 @@
         Number(resolvedColorRange.max),
       ),
   );
+  $: paceLabelFormatter = (value: number) => {
+    const label = formatPace(Number(value)).replace(" /km", "");
+    return Number.isFinite(resolvedPaceRange.min) &&
+      Math.abs(Number(value) - Number(resolvedPaceRange.min)) <= 0.001
+      ? ""
+      : label;
+  };
 
   $: chartOption = {
     animation: false,
-    grid: { left: 72, right: 28, top: 28, bottom: 76 },
+    grid: { left: 18, right: 0, top: 30, bottom: 44, containLabel: true },
     tooltip: {
       trigger: "item",
       enterable: false,
@@ -258,18 +265,19 @@
         : undefined,
       name: "Pace (min/km)",
       nameLocation: "middle",
-      nameGap: 38,
+      nameGap: 28,
       axisLabel: {
-        formatter: (value: number) =>
-          formatPace(Number(value)).replace(" /km", ""),
+        formatter: paceLabelFormatter,
       },
     },
     yAxis: {
       type: "value",
       name: "Heart Rate (bpm)",
-      nameLocation: "middle",
-      nameGap: 50,
+      nameLocation: "end",
+      nameGap: 8,
+      nameRotate: 0,
       axisLabel: {
+        margin: 8,
         formatter: (value: number) => `${Math.round(Number(value))}`,
       },
     },
