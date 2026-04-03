@@ -54,6 +54,7 @@
         bind:value={apiKey}
         type="password"
         class:has-saved-key={hasApiKey}
+        on:input={() => dispatch("keychange")}
         placeholder={hasApiKey
           ? "Key provided."
           : "Paste Intervals.icu API key"}
@@ -111,7 +112,11 @@
     {#if statusHint}
       <div>{statusHint}</div>
     {/if}
-    {status}
+    {#if isStatusError && status.startsWith("Intervals.icu API ")}
+      <pre><code>{status}</code></pre>
+    {:else}
+      {status}
+    {/if}
   </div>
 
   {#if syncBusy && syncProgressPercent !== null}

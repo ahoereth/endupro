@@ -382,6 +382,14 @@
     }
   }
 
+  function handleApiKeyChange() {
+    if (summarySettings.hasApiKey) {
+      status = "API key saved. Ready to sync.";
+      return;
+    }
+    status = "Enter an API key to save.";
+  }
+
   async function saveOverrides(event: CustomEvent) {
     try {
       runtimeSettings = validateRuntimeSettings(
@@ -412,6 +420,12 @@
 
   async function runReset(scope: "clear-activities" | "delete-all") {
     if (!workerClient) return;
+    console.log("runReset:start", {
+      scope,
+      hasApiKey: summarySettings.hasApiKey,
+      apiKeyLength: String(runtimeSettings.apiKey || "").length,
+      status,
+    });
     syncBusy = true;
     syncProgressPercent = null;
     try {
@@ -430,6 +444,12 @@
       summarySettings = buildSettingsSummary(runtimeSettings);
       await workerClient.setRuntimeSettings(runtimeSettings);
       await refresh();
+      console.log("runReset:after-refresh", {
+        scope,
+        hasApiKey: summarySettings.hasApiKey,
+        apiKeyLength: String(runtimeSettings.apiKey || "").length,
+        status,
+      });
       if (urlStateReady) {
         syncUrlState(true);
       }
@@ -437,7 +457,17 @@
         scope === "delete-all"
           ? "All local data deleted, including API key."
           : "Local activity data cleared. API key kept.";
+      console.log("runReset:done", {
+        scope,
+        hasApiKey: summarySettings.hasApiKey,
+        apiKeyLength: String(runtimeSettings.apiKey || "").length,
+        status,
+      });
     } catch (error) {
+      console.log("runReset:error", {
+        scope,
+        error,
+      });
       status =
         error instanceof Error ? error.message : "Could not reset local data.";
     } finally {
@@ -649,6 +679,7 @@
       {mobileMenuOpen}
       onCloseMenu={() => (mobileMenuOpen = false)}
       onSaveKey={saveApiKey}
+      onKeyChange={handleApiKeyChange}
       onUpdate={() => syncController.runIncremental(false)}
       onStopSync={syncController.requestStopSync}
       onClearActivities={() => {
@@ -661,11 +692,17 @@
         }
       }}
       onDeleteAll={() => {
+        console.log("delete-all:clicked", {
+          hasApiKey: summarySettings.hasApiKey,
+          apiKeyLength: String(runtimeSettings.apiKey || "").length,
+          status,
+        });
         if (
           window.confirm(
             "Delete all data, including your saved API key? This cannot be undone.",
           )
         ) {
+          console.log("delete-all:confirmed");
           void runReset("delete-all");
         }
       }}
@@ -688,25 +725,6 @@
     </ConnectionSection>
 
     <section class="right-column">
-      {#if !syncBusy && isSyncErrorStatus(status)}
-        <section
-          class="card mobile-sync-progress-card mobile-sync-connection-card"
-        >
-          <h2>Connection Issue</h2>
-          <ConnectionPanel
-            {status}
-            hasApiKey={summarySettings.hasApiKey}
-            syncedAt={payload?.syncedAt ?? null}
-            {oldestRun}
-            {latestRun}
-            {syncBusy}
-            {syncStopping}
-            {syncProgressPercent}
-            activityCount={payload?.activityCount ?? 0}
-          />
-        </section>
-      {/if}
-
       {#if syncBusy && syncProgressPercent !== null}
         <section class="card mobile-sync-progress-card">
           <h2>Sync Progress</h2>

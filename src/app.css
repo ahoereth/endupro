@@ -317,14 +317,13 @@ body.has-mobile-panel-open {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .connection-actions button,
 .connection-actions select {
-  white-space: nowrap;
   min-width: 0;
-  flex: 1 1 0;
+  flex: 1 1 12rem;
 }
 
 .connection-actions select {
@@ -337,11 +336,11 @@ body.has-mobile-panel-open {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .data-reset-actions button {
-  flex: 1 1 0;
+  flex: 1 1 12rem;
   min-width: 0;
 }
 
@@ -650,17 +649,29 @@ button:disabled {
 
 .status-box {
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.65);
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .status-box--error {
+  padding: 10px 12px;
   border-color: #e5a3a3;
+  border-style: solid;
+  border-width: 1px;
+  border-radius: 10px;
   background: #fff4f4;
   color: #8f1f1f;
+}
+
+.status-box pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.status-box code {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .sync-progress {
@@ -2018,6 +2029,8 @@ svg {
   .mobile-connection-panel {
     display: block;
     margin-bottom: 16px;
+    position: relative;
+    z-index: 1;
   }
 
   .mobile-sync-progress-card {

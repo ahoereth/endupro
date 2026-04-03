@@ -12,15 +12,19 @@
   export let syncProgressPercent: number | null = null;
   export let activityCount = 0;
   export let onSaveKey: (apiKey: string) => void;
+  export let onKeyChange: () => void;
   export let onUpdate: () => void;
   export let onStopSync: () => void;
   export let onClearActivities: () => void;
   export let onDeleteAll: () => void;
   export let mobileMenuOpen = false;
   export let onCloseMenu: () => void;
+
+  $: isConnectionFaulty =
+    typeof status === "string" && status.startsWith("Intervals.icu API ");
 </script>
 
-{#if !hasApiKey}
+{#if !hasApiKey || isConnectionFaulty}
   <div class="mobile-connection-panel">
     <ConnectionPanel
       {status}
@@ -33,6 +37,11 @@
       {syncProgressPercent}
       {activityCount}
       on:savekey={(event) => onSaveKey(event.detail.apiKey)}
+      on:keychange={onKeyChange}
+      on:update={onUpdate}
+      on:stopsync={onStopSync}
+      on:clearactivities={onClearActivities}
+      on:deleteall={onDeleteAll}
     />
   </div>
 {/if}
@@ -59,6 +68,7 @@
     {syncProgressPercent}
     {activityCount}
     on:savekey={(event) => onSaveKey(event.detail.apiKey)}
+    on:keychange={onKeyChange}
     on:update={onUpdate}
     on:stopsync={onStopSync}
     on:clearactivities={onClearActivities}
