@@ -1,50 +1,85 @@
 # endupro
 
-Local personal dashboard for endurance running data.
+Browser-only endurance dashboard for Intervals.icu data.
 
-## What this version does
+## Architecture
 
-- Stores your Intervals.icu API key and local HR-zone override settings in `data/settings.json`.
-- Pulls your run activities from Intervals.icu into `data/activities.json`.
-- Computes and charts 7, 14, 30, 90, and 180-day rolling sums of distance in km.
-- Computes and charts a 30-day moving average of the 7-day sum (`sum7ma30`) for smoother trend context.
-- Computes and charts a 90-day moving average of the 7-day sum (`sum7ma90`) for long-term trend context.
-- Computes and charts a distance-based `Tolerance km (model)` line from all available history.
-- Shows the most recent 90 days by default and provides a dual-handle timeline scrubber (start/end) to inspect any range.
-- Shows a Running Tolerance indicator (Stable/Caution/High Risk) based on run-km ACWR, weekly ramp, and monotony.
-- Plots a Tolerance line (ACWR) over time on a secondary chart axis.
-- Plots a 10% ramp cap line for weekly load (`1.10 * previous 7-day sum`) on the km axis for visual comparison.
-- Adds long-term tolerance measures: 4-week ramp vs prior 4-week average and recent >10% week-over-week breach count.
-- Adds a Heart Rate vs Pace scatter chart using interval-split points first, then per-km split points, then run-level fallback, with a trend line and Pearson correlation (`r`) for the currently selected timeline range.
-- Includes a dedicated help section explaining ACWR, ramp, monotony, and interpretation guidance.
-- Shows a monotony gauge (0-3+ scale with risk zones) in the tolerance panel for faster interpretation.
-- Runs as a local single-user app with no external database.
-- Sync lookback supports `All data` (from first activity) plus multi-year ranges up to 3650 days (10 years), and the chart renders the full synced lookback window.
-- Default `Update` is incremental: it fetches activities from the last synced date (inclusive) to today and merges into local history.
-- `Sync Range` is available when you explicitly want to re-sync a lookback window/all data.
+- SvelteKit + TypeScript frontend, shipped as a static site.
+- Client-only runtime: no endupro backend API server and no SSR dependency for app behavior.
+- Intervals.icu sync, enrichment, and derived-metric computation run inside a Web Worker through Comlink.
+- Persistent browser storage:
+  - `localStorage` for API key, HR-zone overrides, and UI preferences
+  - IndexedDB via Dexie for synced activities, sync metadata, and derived cache entries
 
-## Run locally
+## Current Feature Set
+
+- Incremental `Update` sync and full-history `Fetch All` / `Reload All`
+- Auto-update on open when an API key exists and local data has not been synced today
+- Rolling load series and tolerance panel
+- Range Foundations summary panel
+- Recent activities search and multi-select behavior
+- Comparable-runs pace/HR scatter view
+- Pace-bin HR heatmap
+- Activity detail drawer with baseline context, intervals, and kilometer splits
+- Threshold-based running HR zones with local override support
+- URL restore for `?activity=<id>`
+
+## Fresh-Start Migration
+
+This app no longer reads `data/settings.json` or `data/activities.json`.
+
+- Existing repo-local JSON files are ignored
+- Upgrading to the static app starts from empty browser storage
+- Users must save their API key again in the browser and run a fresh sync
+
+## Local Development
+
+Install dependencies:
 
 ```bash
-npm start
+npm install
 ```
 
-Then open [http://localhost:3000](http://localhost:3000).
-
-`npm start` now runs in dev watch mode:
-- server restarts automatically when `server.js` or files in `public/` change
-- browser auto-refreshes when the server restarts, restoring in-page state and scroll position
-
-If you want a plain non-watch server process:
+Run the app:
 
 ```bash
-npm run start:server
+npm run dev
 ```
 
-## Notes
+Validation commands:
 
-- This uses basic auth with `API_KEY:<your api key>` against:
-  - `GET https://intervals.icu/api/v1/athlete/0/activities?oldest=YYYY-MM-DD&newest=YYYY-MM-DD`
-- Activity distances are interpreted as metric and converted to kilometers.
-- Interval split heart rate/pace points are read from Intervals activity details (`?intervals=true`) when available; if absent, per-km points are derived from activity streams (`distance`, `time`, `heartrate`), then run-level points are used as fallback.
-- Running HR zones are always kept as a 5-zone model derived from running lactate-threshold HR (`lthr`) using 85/90/95/100% cutoffs. Explicit HR-zone boundaries from Intervals.icu are ignored.
+```bash
+npm run lint
+npm run format:check
+npm run check
+npm run test
+npm run build
+```
+
+## Git Hooks
+
+- `.husky/pre-commit` runs `lint-staged`
+- `.husky/pre-push` runs `npm run check`, `npm run build`, and `npm run test`
+
+Run `npm install` once to activate Husky hooks locally.
+
+## GitHub Pages
+
+The repo is configured for the native GitHub Pages Actions flow.
+
+- CI workflow: `.github/workflows/ci.yml`
+- Pages deploy workflow: `.github/workflows/deploy-pages.yml`
+- Production builds use the repository base path `/edupro`
+- `adapter-static` emits `404.html` for SPA fallback and `static/.nojekyll` is included for Pages hosting
+
+Repository settings should point Pages to the GitHub Actions deployment source.
+
+## Manual Validation Checklist
+
+- Save an API key and confirm browser reload keeps it locally
+- Run `Update` against an account with existing activities
+- Run `Fetch All` / `Reload All`
+- Confirm `Clear Activities` keeps the API key
+- Confirm `Delete All Data` wipes browser-side settings and data
+- Open an activity via the recent list and reload with `?activity=<id>`
+- Check mobile navigation drawer and activity detail drawer behavior

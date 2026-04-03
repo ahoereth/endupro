@@ -1,58 +1,26 @@
-const http = require("http");
-const fs = require("fs/promises");
-const path = require("path");
-
-const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "127.0.0.1";
-const DATA_DIR = path.join(__dirname, "data");
-const PUBLIC_DIR = path.join(__dirname, "public");
-const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
-const ACTIVITIES_FILE = path.join(DATA_DIR, "activities.json");
-const PACE_SOURCE_VERSION = 3;
-const SPLIT_SOURCE_VERSION = 5;
-const INTERVAL_SOURCE_VERSION = 2;
-const ACTIVITY_META_SOURCE_VERSION = 3;
-const DETAIL_STREAM_SOURCE_VERSION = 2;
 const HR_ZONE_COUNT = 5;
 const DEFAULT_LTHR_ZONE_EDGE_PCTS = [85, 90, 95, 100];
-const SPLIT_FETCH_CONCURRENCY = 2;
+const SPLIT_FETCH_CONCURRENCY = 1;
 const ACTIVITY_FETCH_MAX_RETRIES = 3;
 const ACTIVITY_FETCH_RETRY_BASE_MS = 300;
 const ACTIVITY_FETCH_RETRY_MAX_MS = 3_000;
+const ACTIVITY_FETCH_THROTTLE_MS = 450;
+const ACTIVITY_FETCH_THROTTLE_JITTER_MS = 150;
 const INCREMENTAL_ROLLING_BACKFILL_DAYS = 14;
-const DEV_LIVE_RELOAD_ENABLED = process.env.FITBOARD_DEV_LIVE_RELOAD === "1";
-const DEV_RELOAD_TOKEN = `${process.pid}-${Date.now()}`;
+const UPDATE_RECENT_RELOAD_DAYS = 30;
 
-const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon"
-};
+let intervalsRequestChain = Promise.resolve();
+let nextIntervalsRequestAtMs = 0;
 
-function jsonResponse(res, status, payload) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(payload));
-}
-
-function textResponse(res, status, body) {
-  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end(body);
-}
-
-function writeSseEvent(res, eventName, payload) {
-  res.write(`event: ${eventName}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+function encodeBasicAuth(apiKey) {
+  return btoa(`API_KEY:${apiKey}`);
 }
 
 function blankHrZoneOverrideRows() {
   return Array.from({ length: HR_ZONE_COUNT }, (_, idx) => ({
     label: `Z${idx + 1}`,
     minBpm: null,
-    maxBpm: null
+    maxBpm: null,
   }));
 }
 
@@ -60,62 +28,9 @@ function defaultSettings() {
   return {
     apiKey: "",
     runningThresholdHrOverride: null,
-    hrZonesRunningOverride: blankHrZoneOverrideRows()
+    hrZonesRunningOverride: blankHrZoneOverrideRows(),
   };
 }
-
-async function ensureDataFiles() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-
-  try {
-    await fs.access(SETTINGS_FILE);
-  } catch {
-    await writeJson(SETTINGS_FILE, defaultSettings());
-  }
-
-  try {
-    await fs.access(ACTIVITIES_FILE);
-  } catch {
-    await writeJson(ACTIVITIES_FILE, {
-      syncedAt: null,
-      lookbackDays: 365,
-      runningThresholdHr: null,
-      hrZonesRunning: [],
-      activities: []
-    });
-  }
-}
-
-async function readJson(filePath, fallback) {
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
-}
-
-async function writeJson(filePath, data) {
-  const tempPath = `${filePath}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf8");
-  await fs.rename(tempPath, filePath);
-}
-
-async function parseJsonBody(req) {
-  const chunks = [];
-
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-
-  if (chunks.length === 0) {
-    return {};
-  }
-
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return JSON.parse(raw);
-}
-
 function formatDateUTC(date) {
   const year = date.getUTCFullYear();
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -161,7 +76,7 @@ function normalizeHrBpm(activity) {
     activity.avg_hr,
     activity.average_heartrate,
     activity.heartrate,
-    activity.hr
+    activity.hr,
   ];
 
   for (const value of candidates) {
@@ -185,7 +100,7 @@ function normalizeMaxHrBpm(activity, fallback = null) {
       activity.maxHeartRate,
       activity.maxHrBpm,
       activity.maxHr,
-      activity.hr_max
+      activity.hr_max,
     ];
 
     for (const value of candidates) {
@@ -197,7 +112,11 @@ function normalizeMaxHrBpm(activity, fallback = null) {
   }
 
   const fallbackValue = Number(fallback);
-  if (Number.isFinite(fallbackValue) && fallbackValue >= 30 && fallbackValue <= 260) {
+  if (
+    Number.isFinite(fallbackValue) &&
+    fallbackValue >= 30 &&
+    fallbackValue <= 260
+  ) {
     return Number(fallbackValue.toFixed(1));
   }
 
@@ -220,19 +139,33 @@ function normalizeActivityName(activity, fallback = null) {
     activity.display_name,
     activity.label,
     activity.description,
-    activity.notes
+    activity.notes,
   ];
   if (activity.workout && typeof activity.workout === "object") {
-    candidates.push(activity.workout.name, activity.workout.title, activity.workout.label);
+    candidates.push(
+      activity.workout.name,
+      activity.workout.title,
+      activity.workout.label,
+    );
   }
   if (activity.activity && typeof activity.activity === "object") {
-    candidates.push(activity.activity.name, activity.activity.title, activity.activity.label);
+    candidates.push(
+      activity.activity.name,
+      activity.activity.title,
+      activity.activity.label,
+    );
   }
   if (activity.event && typeof activity.event === "object") {
-    candidates.push(activity.event.name, activity.event.title, activity.event.label);
+    candidates.push(
+      activity.event.name,
+      activity.event.title,
+      activity.event.label,
+    );
   }
 
-  const found = candidates.find((value) => typeof value === "string" && value.trim().length > 0);
+  const found = candidates.find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
   if (found) {
     return found.trim();
   }
@@ -245,8 +178,15 @@ function normalizeActivityStartDateTime(activity, fallback = null) {
     return fallback;
   }
 
-  const candidates = [activity.start_date_local, activity.start_date, activity.startDateTime, activity.started_at];
-  const found = candidates.find((value) => typeof value === "string" && value.trim().length > 0);
+  const candidates = [
+    activity.start_date_local,
+    activity.start_date,
+    activity.startDateTime,
+    activity.started_at,
+  ];
+  const found = candidates.find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
   if (found) {
     return found.trim();
   }
@@ -309,7 +249,7 @@ function normalizeMovingTimeSec(activity, fallback = null) {
       activity.icu_elapsed_time,
       activity.duration,
       activity.movingTimeSec,
-      activity.movingTime
+      activity.movingTime,
     ];
 
     for (const candidate of candidates) {
@@ -334,7 +274,7 @@ function normalizeElevationGainM(activity, fallback = null) {
       activity.elevationGain,
       activity.elev_gain,
       activity.climb,
-      activity.total_ascent
+      activity.total_ascent,
     ];
 
     for (const candidate of candidates) {
@@ -378,7 +318,7 @@ function normalizeAvgTempC(activity, fallback = null) {
       activity.avgTemp,
       activity.temperature,
       activity.temp,
-      activity.weather_temperature
+      activity.weather_temperature,
     ];
 
     for (const candidate of candidates) {
@@ -402,7 +342,7 @@ function normalizeLoad(activity, fallback = null) {
       activity.load,
       activity.relative_effort,
       activity.relativeEffort,
-      activity.effort
+      activity.effort,
     ];
 
     for (const candidate of candidates) {
@@ -427,7 +367,7 @@ function normalizePaceMinKm(activity, km) {
     activity.moving_time,
     activity.elapsed_time,
     activity.icu_elapsed_time,
-    activity.duration
+    activity.duration,
   ];
   for (const value of durationCandidates) {
     const seconds = Number(value);
@@ -503,7 +443,9 @@ function normalizeThresholdOverride(value) {
     return null;
   }
   if (numeric < 80 || numeric > 240) {
-    throw new Error("Running threshold HR override must be between 80 and 240 bpm.");
+    throw new Error(
+      "Running threshold HR override must be between 80 and 240 bpm.",
+    );
   }
   return Number(numeric.toFixed(1));
 }
@@ -515,25 +457,39 @@ function normalizeHrZoneOverrideRows(raw) {
   }
   for (let i = 0; i < HR_ZONE_COUNT && i < raw.length; i += 1) {
     const entry = raw[i] && typeof raw[i] === "object" ? raw[i] : {};
-    const minValue = safeNumber(entry.minBpm ?? entry.min ?? entry.lower ?? entry.from ?? null);
-    const maxValue = safeNumber(entry.maxBpm ?? entry.max ?? entry.upper ?? entry.to ?? null);
+    const minValue = safeNumber(
+      entry.minBpm ?? entry.min ?? entry.lower ?? entry.from ?? null,
+    );
+    const maxValue = safeNumber(
+      entry.maxBpm ?? entry.max ?? entry.upper ?? entry.to ?? null,
+    );
     if (minValue !== null && (minValue < 0 || minValue > 260)) {
-      throw new Error(`Zone ${i + 1} min override must be between 0 and 260 bpm.`);
+      throw new Error(
+        `Zone ${i + 1} min override must be between 0 and 260 bpm.`,
+      );
     }
     if (maxValue !== null && (maxValue < 0 || maxValue > 260)) {
-      throw new Error(`Zone ${i + 1} max override must be between 0 and 260 bpm.`);
+      throw new Error(
+        `Zone ${i + 1} max override must be between 0 and 260 bpm.`,
+      );
     }
     rows[i] = {
       label: `Z${i + 1}`,
       minBpm: minValue === null ? null : Number(minValue.toFixed(1)),
-      maxBpm: maxValue === null ? null : Number(maxValue.toFixed(1))
+      maxBpm: maxValue === null ? null : Number(maxValue.toFixed(1)),
     };
   }
   return rows;
 }
 
 function hasAnyHrZoneOverrides(rows) {
-  return Array.isArray(rows) && rows.some((row) => safeNumber(row?.minBpm) !== null || safeNumber(row?.maxBpm) !== null);
+  return (
+    Array.isArray(rows) &&
+    rows.some(
+      (row) =>
+        safeNumber(row?.minBpm) !== null || safeNumber(row?.maxBpm) !== null,
+    )
+  );
 }
 
 function buildZonesFromOverrideRows(rows) {
@@ -545,8 +501,14 @@ function buildZonesFromOverrideRows(rows) {
     const maxValue = safeNumber(row?.maxBpm);
     return {
       label: `Z${idx + 1}`,
-      minBpm: minValue !== null ? Number(minValue.toFixed(1)) : idx === 0 ? 0 : null,
-      maxBpm: maxValue !== null ? Number(maxValue.toFixed(1)) : idx === HR_ZONE_COUNT - 1 ? null : null
+      minBpm:
+        minValue !== null ? Number(minValue.toFixed(1)) : idx === 0 ? 0 : null,
+      maxBpm:
+        maxValue !== null
+          ? Number(maxValue.toFixed(1))
+          : idx === HR_ZONE_COUNT - 1
+            ? null
+            : null,
     };
   });
   return isValidHrZones(zones) ? zones : [];
@@ -559,8 +521,14 @@ function applyHrZoneOverrides(baseZones, rows) {
   const normalizedRows = normalizeHrZoneOverrideRows(rows);
   const merged = baseZones.slice(0, HR_ZONE_COUNT).map((zone, idx) => ({
     label: zone?.label || `Z${idx + 1}`,
-    minBpm: safeNumber(normalizedRows[idx]?.minBpm) !== null ? Number(normalizedRows[idx].minBpm) : Number(zone.minBpm),
-    maxBpm: safeNumber(normalizedRows[idx]?.maxBpm) !== null ? Number(normalizedRows[idx].maxBpm) : zone.maxBpm
+    minBpm:
+      safeNumber(normalizedRows[idx]?.minBpm) !== null
+        ? Number(normalizedRows[idx].minBpm)
+        : Number(zone.minBpm),
+    maxBpm:
+      safeNumber(normalizedRows[idx]?.maxBpm) !== null
+        ? Number(normalizedRows[idx].maxBpm)
+        : zone.maxBpm,
   }));
   return isValidHrZones(merged) ? merged : [];
 }
@@ -569,32 +537,48 @@ function normalizeSettings(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
     apiKey: typeof source.apiKey === "string" ? source.apiKey.trim() : "",
-    runningThresholdHrOverride: normalizeThresholdOverride(source.runningThresholdHrOverride),
-    hrZonesRunningOverride: normalizeHrZoneOverrideRows(source.hrZonesRunningOverride)
+    runningThresholdHrOverride: normalizeThresholdOverride(
+      source.runningThresholdHrOverride,
+    ),
+    hrZonesRunningOverride: normalizeHrZoneOverrideRows(
+      source.hrZonesRunningOverride,
+    ),
   };
 }
 
 function resolveRunningHrZoneConfiguration(defaultThresholdHr, settings) {
   const normalizedSettings = normalizeSettings(settings);
   const defaultThreshold = safeNumber(defaultThresholdHr);
-  const thresholdOverride = safeNumber(normalizedSettings.runningThresholdHrOverride);
-  const effectiveThreshold = thresholdOverride !== null ? Number(thresholdOverride) : defaultThreshold;
+  const thresholdOverride = safeNumber(
+    normalizedSettings.runningThresholdHrOverride,
+  );
+  const effectiveThreshold =
+    thresholdOverride !== null ? Number(thresholdOverride) : defaultThreshold;
   const defaultZones = buildFiveZonesFromThresholdHr(defaultThreshold);
   const thresholdZones = buildFiveZonesFromThresholdHr(effectiveThreshold);
-  const zoneOverrides = normalizeHrZoneOverrideRows(normalizedSettings.hrZonesRunningOverride);
+  const zoneOverrides = normalizeHrZoneOverrideRows(
+    normalizedSettings.hrZonesRunningOverride,
+  );
   let effectiveZones = [];
   if (thresholdZones.length) {
-    effectiveZones = hasAnyHrZoneOverrides(zoneOverrides) ? applyHrZoneOverrides(thresholdZones, zoneOverrides) : thresholdZones;
+    effectiveZones = hasAnyHrZoneOverrides(zoneOverrides)
+      ? applyHrZoneOverrides(thresholdZones, zoneOverrides)
+      : thresholdZones;
   } else if (hasAnyHrZoneOverrides(zoneOverrides)) {
     effectiveZones = buildZonesFromOverrideRows(zoneOverrides);
   }
   return {
-    defaultRunningThresholdHr: defaultThreshold === null ? null : Number(defaultThreshold.toFixed(1)),
-    runningThresholdHrOverride: thresholdOverride === null ? null : Number(thresholdOverride.toFixed(1)),
-    runningThresholdHr: effectiveThreshold === null ? null : Number(effectiveThreshold.toFixed(1)),
+    defaultRunningThresholdHr:
+      defaultThreshold === null ? null : Number(defaultThreshold.toFixed(1)),
+    runningThresholdHrOverride:
+      thresholdOverride === null ? null : Number(thresholdOverride.toFixed(1)),
+    runningThresholdHr:
+      effectiveThreshold === null
+        ? null
+        : Number(effectiveThreshold.toFixed(1)),
     defaultHrZonesRunning: defaultZones,
     hrZonesRunningOverride: zoneOverrides,
-    hrZonesRunning: effectiveZones
+    hrZonesRunning: effectiveZones,
   };
 }
 
@@ -695,7 +679,9 @@ function extractStreamArray(payload, names) {
 }
 
 function normalizeDistanceStreamMeters(distanceRaw, expectedKm) {
-  const values = distanceRaw.map((value) => safeNumber(value)).map((value) => (value === null ? null : Math.max(0, value)));
+  const values = distanceRaw
+    .map((value) => safeNumber(value))
+    .map((value) => (value === null ? null : Math.max(0, value)));
   const finite = values.filter((value) => value !== null);
   if (!finite.length) {
     return [];
@@ -741,20 +727,31 @@ function normalizeHrStream(hrRaw, targetLength) {
     return Array.from({ length: targetLength }, () => null);
   }
 
-  return values.map((value) => (value !== null && value >= 30 && value <= 240 ? value : null));
+  return values.map((value) =>
+    value !== null && value >= 30 && value <= 240 ? value : null,
+  );
 }
 
-function normalizeScalarStream(raw, targetLength, { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {}) {
+function normalizeScalarStream(
+  raw,
+  targetLength,
+  { min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {},
+) {
   const values = raw.map((value) => safeNumber(value));
   if (values.length !== targetLength) {
     return Array.from({ length: targetLength }, () => null);
   }
 
-  return values.map((value) => (value !== null && value >= min && value <= max ? value : null));
+  return values.map((value) =>
+    value !== null && value >= min && value <= max ? value : null,
+  );
 }
 
 function normalizeCadenceStream(cadenceRaw, targetLength) {
-  const values = normalizeScalarStream(cadenceRaw, targetLength, { min: 20, max: 160 });
+  const values = normalizeScalarStream(cadenceRaw, targetLength, {
+    min: 20,
+    max: 160,
+  });
   const finite = values.filter((value) => Number.isFinite(value));
   if (!finite.length) {
     return values;
@@ -762,27 +759,56 @@ function normalizeCadenceStream(cadenceRaw, targetLength) {
 
   const maxValue = Math.max(...finite);
   const multiplier = maxValue <= 130 ? 2 : 1;
-  return values.map((value) => (Number.isFinite(value) ? Number((value * multiplier).toFixed(1)) : null));
+  return values.map((value) =>
+    Number.isFinite(value) ? Number((value * multiplier).toFixed(1)) : null,
+  );
 }
 
 function normalizeAltitudeStream(altitudeRaw, targetLength) {
-  return normalizeScalarStream(altitudeRaw, targetLength, { min: -1000, max: 10000 }).map((value) =>
-    Number.isFinite(value) ? Number(value.toFixed(1)) : null
-  );
+  return normalizeScalarStream(altitudeRaw, targetLength, {
+    min: -1000,
+    max: 10000,
+  }).map((value) => (Number.isFinite(value) ? Number(value.toFixed(1)) : null));
 }
 
 function buildActivityDetailStreamPoints(activity, streamPayload) {
   const distanceRaw = extractStreamArray(streamPayload, ["distance", "dist"]);
-  const timeRaw = extractStreamArray(streamPayload, ["time", "seconds", "moving_time"]);
-  const hrRaw = extractStreamArray(streamPayload, ["heartrate", "heart_rate", "hr"]);
-  const cadenceRaw = extractStreamArray(streamPayload, ["cadence", "run_cadence", "steps_per_minute"]);
-  const altitudeRaw = extractStreamArray(streamPayload, ["altitude", "elevation", "alt", "ele"]);
-  const targetLength = Math.max(distanceRaw.length, timeRaw.length, hrRaw.length, cadenceRaw.length, altitudeRaw.length);
+  const timeRaw = extractStreamArray(streamPayload, [
+    "time",
+    "seconds",
+    "moving_time",
+  ]);
+  const hrRaw = extractStreamArray(streamPayload, [
+    "heartrate",
+    "heart_rate",
+    "hr",
+  ]);
+  const cadenceRaw = extractStreamArray(streamPayload, [
+    "cadence",
+    "run_cadence",
+    "steps_per_minute",
+  ]);
+  const altitudeRaw = extractStreamArray(streamPayload, [
+    "altitude",
+    "elevation",
+    "alt",
+    "ele",
+  ]);
+  const targetLength = Math.max(
+    distanceRaw.length,
+    timeRaw.length,
+    hrRaw.length,
+    cadenceRaw.length,
+    altitudeRaw.length,
+  );
   if (targetLength < 2 || !timeRaw.length || !distanceRaw.length) {
     return [];
   }
 
-  const distanceM = normalizeDistanceStreamMeters(distanceRaw, activity.distanceKm);
+  const distanceM = normalizeDistanceStreamMeters(
+    distanceRaw,
+    activity.distanceKm,
+  );
   if (distanceM.length !== targetLength) {
     return [];
   }
@@ -803,13 +829,17 @@ function buildActivityDetailStreamPoints(activity, streamPayload) {
     if (!Number.isFinite(dt) || !Number.isFinite(dd) || dt <= 0 || dd <= 0.5) {
       continue;
     }
-    rawPace[i] = sanitizePaceMinKm((dt / 60) / (dd / 1000));
+    rawPace[i] = sanitizePaceMinKm(dt / 60 / (dd / 1000));
   }
 
   const smoothedPace = rawPace.map((_, i) => {
     let sum = 0;
     let count = 0;
-    for (let j = Math.max(0, i - 2); j <= Math.min(targetLength - 1, i + 2); j += 1) {
+    for (
+      let j = Math.max(0, i - 2);
+      j <= Math.min(targetLength - 1, i + 2);
+      j += 1
+    ) {
       const value = rawPace[j];
       if (!Number.isFinite(value)) {
         continue;
@@ -833,8 +863,12 @@ function buildActivityDetailStreamPoints(activity, streamPayload) {
       distanceKm: Number((Number(distanceM[i]) / 1000).toFixed(3)),
       paceMinKm: smoothedPace[i],
       hrBpm: Number.isFinite(hr[i]) ? Number(hr[i].toFixed(1)) : null,
-      cadenceSpm: Number.isFinite(cadence[i]) ? Number(cadence[i].toFixed(1)) : null,
-      altitudeM: Number.isFinite(altitude[i]) ? Number(altitude[i].toFixed(1)) : null
+      cadenceSpm: Number.isFinite(cadence[i])
+        ? Number(cadence[i].toFixed(1))
+        : null,
+      altitudeM: Number.isFinite(altitude[i])
+        ? Number(altitude[i].toFixed(1))
+        : null,
     });
   }
 
@@ -857,13 +891,22 @@ function buildPerKmSplitPoints(activity, streamPayload) {
     return [];
   }
 
-  const distanceM = normalizeDistanceStreamMeters(distanceRaw, activity.distanceKm);
+  const distanceM = normalizeDistanceStreamMeters(
+    distanceRaw,
+    activity.distanceKm,
+  );
   if (distanceM.length < 2) {
     return [];
   }
 
-  const timeS = normalizeTimeStreamSeconds(extractStreamArray(streamPayload, ["time", "seconds", "moving_time"]), distanceM.length);
-  const hr = normalizeHrStream(extractStreamArray(streamPayload, ["heartrate", "heart_rate", "hr"]), distanceM.length);
+  const timeS = normalizeTimeStreamSeconds(
+    extractStreamArray(streamPayload, ["time", "seconds", "moving_time"]),
+    distanceM.length,
+  );
+  const hr = normalizeHrStream(
+    extractStreamArray(streamPayload, ["heartrate", "heart_rate", "hr"]),
+    distanceM.length,
+  );
 
   const buckets = new Map();
   function ensureBucket(index) {
@@ -879,12 +922,19 @@ function buildPerKmSplitPoints(activity, streamPayload) {
     const prevTime = timeS[i - 1];
     const curTime = timeS[i];
 
-    if (!Number.isFinite(prevDist) || !Number.isFinite(curDist) || curDist <= prevDist) {
+    if (
+      !Number.isFinite(prevDist) ||
+      !Number.isFinite(curDist) ||
+      curDist <= prevDist
+    ) {
       continue;
     }
 
     const distanceDelta = curDist - prevDist;
-    const rawTimeDelta = Number.isFinite(curTime) && Number.isFinite(prevTime) ? curTime - prevTime : 1;
+    const rawTimeDelta =
+      Number.isFinite(curTime) && Number.isFinite(prevTime)
+        ? curTime - prevTime
+        : 1;
     const timeDelta = rawTimeDelta > 0 ? rawTimeDelta : 1;
 
     let startDist = prevDist;
@@ -918,7 +968,10 @@ function buildPerKmSplitPoints(activity, streamPayload) {
   const ordered = Array.from(buckets.entries()).sort((a, b) => a[0] - b[0]);
   const lastBucketIndex = ordered.length ? ordered[ordered.length - 1][0] : -1;
   for (const [kmIndex, bucket] of ordered) {
-    const isFinalPartialBucket = kmIndex === lastBucketIndex && Number.isFinite(bucket.distM) && bucket.distM >= 200;
+    const isFinalPartialBucket =
+      kmIndex === lastBucketIndex &&
+      Number.isFinite(bucket.distM) &&
+      bucket.distM >= 200;
     if (
       !Number.isFinite(bucket.distM) ||
       (!isFinalPartialBucket && bucket.distM < 990) ||
@@ -928,19 +981,24 @@ function buildPerKmSplitPoints(activity, streamPayload) {
       continue;
     }
 
-    const paceMinKm = sanitizePaceMinKm(bucket.timeS / 60 / (bucket.distM / 1000));
+    const paceMinKm = sanitizePaceMinKm(
+      bucket.timeS / 60 / (bucket.distM / 1000),
+    );
     if (paceMinKm === null) {
       continue;
     }
 
-    const avgHrBpm = bucket.hrWeight > 0 ? Number((bucket.hrWeightedSum / bucket.hrWeight).toFixed(1)) : null;
+    const avgHrBpm =
+      bucket.hrWeight > 0
+        ? Number((bucket.hrWeightedSum / bucket.hrWeight).toFixed(1))
+        : null;
     points.push({
       activityId: activity.id,
       date: activity.date,
       splitKm: kmIndex + 1,
       splitDistanceKm: Number((bucket.distM / 1000).toFixed(3)),
       paceMinKm,
-      avgHrBpm
+      avgHrBpm,
     });
   }
 
@@ -948,7 +1006,9 @@ function buildPerKmSplitPoints(activity, streamPayload) {
 }
 
 function buildIntervalPoints(activity, detailPayload) {
-  const intervals = Array.isArray(detailPayload?.icu_intervals) ? detailPayload.icu_intervals : [];
+  const intervals = Array.isArray(detailPayload?.icu_intervals)
+    ? detailPayload.icu_intervals
+    : [];
   if (!intervals.length) {
     return [];
   }
@@ -961,16 +1021,34 @@ function buildIntervalPoints(activity, detailPayload) {
     }
 
     const distanceM = safeNumber(interval.distance);
-    const movingTimeS = safeNumber(interval.moving_time ?? interval.elapsed_time);
-    const avgHr = safeNumber(interval.average_heartrate ?? interval.average_hr ?? interval.heartrate);
+    const movingTimeS = safeNumber(
+      interval.moving_time ?? interval.elapsed_time,
+    );
+    const avgHr = safeNumber(
+      interval.average_heartrate ?? interval.average_hr ?? interval.heartrate,
+    );
+    const maxHr = safeNumber(
+      interval.max_heartrate ?? interval.maximum_heartrate ?? interval.max_hr,
+    );
     const distanceKm =
-      Number.isFinite(distanceM) && distanceM >= 0 ? Number((Math.max(0, distanceM) / 1000).toFixed(3)) : null;
+      Number.isFinite(distanceM) && distanceM >= 0
+        ? Number((Math.max(0, distanceM) / 1000).toFixed(3))
+        : null;
     const paceMinKm =
-      Number.isFinite(movingTimeS) && movingTimeS > 0 && Number.isFinite(distanceKm) && distanceKm > 0
+      Number.isFinite(movingTimeS) &&
+      movingTimeS > 0 &&
+      Number.isFinite(distanceKm) &&
+      distanceKm > 0
         ? sanitizePaceMinKm(movingTimeS / 60 / distanceKm)
         : null;
     const avgHrBpm =
-      Number.isFinite(avgHr) && avgHr >= 30 && avgHr <= 240 ? Number(avgHr.toFixed(1)) : null;
+      Number.isFinite(avgHr) && avgHr >= 30 && avgHr <= 240
+        ? Number(avgHr.toFixed(1))
+        : null;
+    const maxHrBpm =
+      Number.isFinite(maxHr) && maxHr >= 30 && maxHr <= 260
+        ? Number(maxHr.toFixed(1))
+        : null;
 
     points.push({
       activityId: activity.id,
@@ -978,10 +1056,18 @@ function buildIntervalPoints(activity, detailPayload) {
       intervalIndex: i + 1,
       intervalType: String(interval.type || ""),
       distanceKm,
-      movingTimeSec: Number.isFinite(movingTimeS) && movingTimeS > 0 ? Number(movingTimeS) : null,
+      movingTimeSec:
+        Number.isFinite(movingTimeS) && movingTimeS > 0
+          ? Number(movingTimeS)
+          : null,
       paceMinKm,
       avgHrBpm,
-      chartEligible: Number.isFinite(paceMinKm) && paceMinKm > 0 && Number.isFinite(avgHrBpm) && avgHrBpm > 0
+      maxHrBpm,
+      chartEligible:
+        Number.isFinite(paceMinKm) &&
+        paceMinKm > 0 &&
+        Number.isFinite(avgHrBpm) &&
+        avgHrBpm > 0,
     });
   }
 
@@ -990,7 +1076,12 @@ function buildIntervalPoints(activity, detailPayload) {
 
 function shouldDerivePerKmSplitsFromStreams(activity, intervalPoints) {
   const usableIntervals = Array.isArray(intervalPoints)
-    ? intervalPoints.filter((point) => point && Number.isFinite(Number(point.distanceKm)) && Number(point.distanceKm) > 0)
+    ? intervalPoints.filter(
+        (point) =>
+          point &&
+          Number.isFinite(Number(point.distanceKm)) &&
+          Number(point.distanceKm) > 0,
+      )
     : [];
   return usableIntervals.length <= 2;
 }
@@ -1020,18 +1111,94 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
-  const auth = Buffer.from(`API_KEY:${apiKey}`, "utf8").toString("base64");
+function createAbortError(message = "Sync cancelled.") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+function sleepWithSignal(ms, signal) {
+  if (!signal) {
+    return sleep(ms);
+  }
+
+  if (signal.aborted) {
+    return Promise.reject(createAbortError());
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    function onAbort() {
+      clearTimeout(timeoutId);
+      signal.removeEventListener("abort", onAbort);
+      reject(createAbortError());
+    }
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function throttleIntervalsRequest(signal) {
+  const reservation = intervalsRequestChain.then(async () => {
+    throwIfAborted(signal);
+    const now = Date.now();
+    const waitMs = Math.max(0, nextIntervalsRequestAtMs - now);
+    if (waitMs > 0) {
+      await sleepWithSignal(waitMs, signal);
+    }
+    throwIfAborted(signal);
+    const jitterMs = Math.floor(
+      Math.random() * (ACTIVITY_FETCH_THROTTLE_JITTER_MS + 1),
+    );
+    nextIntervalsRequestAtMs =
+      Date.now() + ACTIVITY_FETCH_THROTTLE_MS + jitterMs;
+  });
+
+  intervalsRequestChain = reservation.catch(() => {});
+  return reservation;
+}
+
+function isBrowserBlockedNetworkError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    /NetworkError when attempting to fetch resource/i.test(message) ||
+    /Failed to fetch/i.test(message) ||
+    /Load failed/i.test(message)
+  );
+}
+
+async function fetchActivityJsonWithRetry(
+  apiKey,
+  url,
+  activityId,
+  label,
+  options = {},
+) {
+  const auth = encodeBasicAuth(apiKey);
+  const signal = options?.signal;
   let lastError = null;
   const endpoint = `${label} ${url.toString()}`;
 
   for (let attempt = 0; attempt <= ACTIVITY_FETCH_MAX_RETRIES; attempt += 1) {
     try {
+      throwIfAborted(signal);
+      await throttleIntervalsRequest(signal);
       const response = await fetch(url, {
         headers: {
           Authorization: `Basic ${auth}`,
-          Accept: "application/json"
-        }
+          Accept: "application/json",
+        },
+        signal,
       });
 
       if (response.status === 404) {
@@ -1044,56 +1211,95 @@ async function fetchActivityJsonWithRetry(apiKey, url, activityId, label) {
         const retryable = isRetryableStatus(response.status);
         console.error(
           `[endupro] ${endpoint} failed (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
-            ` status=${response.status} retryable=${retryable} target=${activityId} body=${shortBody || response.statusText}`
+            ` status=${response.status} retryable=${retryable} target=${activityId} body=${shortBody || response.statusText}`,
         );
         lastError = new Error(
-          `${label} API ${response.status} for activity ${activityId}: ${shortBody || response.statusText}`
+          `${label} API ${response.status} for activity ${activityId}: ${shortBody || response.statusText}`,
         );
 
         if (!retryable || attempt >= ACTIVITY_FETCH_MAX_RETRIES) {
           throw lastError;
         }
 
-        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-        const exponentialMs = Math.min(ACTIVITY_FETCH_RETRY_BASE_MS * 2 ** attempt, ACTIVITY_FETCH_RETRY_MAX_MS);
+        const retryAfterMs = parseRetryAfterMs(
+          response.headers.get("retry-after"),
+        );
+        const exponentialMs = Math.min(
+          ACTIVITY_FETCH_RETRY_BASE_MS * 2 ** attempt,
+          ACTIVITY_FETCH_RETRY_MAX_MS,
+        );
         const waitMs = retryAfterMs !== null ? retryAfterMs : exponentialMs;
-        await sleep(waitMs);
+        await sleepWithSignal(waitMs, signal);
         continue;
       }
 
       return { unsupported: false, payload: await response.json() };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      if (lastError.name === "AbortError") {
+        throw lastError;
+      }
+      if (isBrowserBlockedNetworkError(lastError)) {
+        console.warn(
+          `[endupro] ${endpoint} blocked in browser for target=${activityId}. Treating this endpoint as unsupported from this origin.`,
+        );
+        return {
+          unsupported: true,
+          unsupportedReason: "browser_blocked",
+          payload: null,
+        };
+      }
       console.error(
         `[endupro] ${endpoint} request error (attempt ${attempt + 1}/${ACTIVITY_FETCH_MAX_RETRIES + 1})` +
-          ` target=${activityId}: ${lastError.message}`
+          ` target=${activityId}: ${lastError.message}`,
       );
       if (attempt >= ACTIVITY_FETCH_MAX_RETRIES) {
         throw lastError;
       }
-      const waitMs = Math.min(ACTIVITY_FETCH_RETRY_BASE_MS * 2 ** attempt, ACTIVITY_FETCH_RETRY_MAX_MS);
-      await sleep(waitMs);
+      const waitMs = Math.min(
+        ACTIVITY_FETCH_RETRY_BASE_MS * 2 ** attempt,
+        ACTIVITY_FETCH_RETRY_MAX_MS,
+      );
+      await sleepWithSignal(waitMs, signal);
     }
   }
 
-  throw lastError || new Error(`${label} API failed for activity ${activityId}`);
+  throw (
+    lastError || new Error(`${label} API failed for activity ${activityId}`)
+  );
 }
 
-async function fetchActivityWithIntervals(apiKey, activityId) {
-  const url = new URL(`https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}`);
+async function fetchActivityWithIntervals(apiKey, activityId, options = {}) {
+  const url = new URL(
+    `https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}`,
+  );
   url.searchParams.set("intervals", "true");
-  return fetchActivityJsonWithRetry(apiKey, url, activityId, "Activity");
+  return fetchActivityJsonWithRetry(
+    apiKey,
+    url,
+    activityId,
+    "Activity",
+    options,
+  );
 }
 
-async function fetchAthleteProfile(apiKey) {
+async function fetchAthleteProfile(apiKey, options = {}) {
   const url = new URL("https://intervals.icu/api/v1/athlete/0");
-  return fetchActivityJsonWithRetry(apiKey, url, "athlete", "Athlete");
+  return fetchActivityJsonWithRetry(apiKey, url, "athlete", "Athlete", options);
 }
 
-async function fetchActivityStreams(apiKey, activityId) {
-  const url = new URL(`https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}/streams.json`);
+async function fetchActivityStreams(apiKey, activityId, options = {}) {
+  const url = new URL(
+    `https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}/streams.json`,
+  );
   url.searchParams.set("types", "distance,time,heartrate,cadence,altitude");
-  return fetchActivityJsonWithRetry(apiKey, url, activityId, "Streams");
+  return fetchActivityJsonWithRetry(
+    apiKey,
+    url,
+    activityId,
+    "Streams",
+    options,
+  );
 }
 
 function zoneEdgeListToZones(edges) {
@@ -1102,8 +1308,8 @@ function zoneEdgeListToZones(edges) {
       edges
         .map((value) => safeNumber(value))
         .filter((value) => value !== null && value > 0 && value < 260)
-        .map((value) => Number(value.toFixed(1)))
-    )
+        .map((value) => Number(value.toFixed(1))),
+    ),
   ).sort((a, b) => a - b);
   if (thresholds.length < HR_ZONE_COUNT - 1) {
     return [];
@@ -1119,7 +1325,7 @@ function zoneEdgeListToZones(edges) {
     zones.push({
       label: `Z${i + 1}`,
       minBpm: Number(min.toFixed(1)),
-      maxBpm: Number.isFinite(max) ? Number(max.toFixed(1)) : null
+      maxBpm: Number.isFinite(max) ? Number(max.toFixed(1)) : null,
     });
     if (Number.isFinite(max)) {
       min = max;
@@ -1175,7 +1381,7 @@ function extractRunningThresholdHrBpm(payload) {
     payload.run_lthr,
     payload.running?.thresholdHr,
     payload.running?.threshold_hr,
-    payload.running?.lthr
+    payload.running?.lthr,
   ];
   for (const candidate of directCandidates) {
     const value = safeNumber(candidate);
@@ -1193,7 +1399,9 @@ function extractRunningThresholdHrBpm(payload) {
     for (const [key, value] of Object.entries(node)) {
       const lowered = key.toLowerCase();
       if (
-        (lowered.includes("lthr") || (lowered.includes("threshold") && lowered.includes("hr")) || lowered.includes("heart_rate_threshold")) &&
+        (lowered.includes("lthr") ||
+          (lowered.includes("threshold") && lowered.includes("hr")) ||
+          lowered.includes("heart_rate_threshold")) &&
         Number.isFinite(Number(value))
       ) {
         const numeric = Number(value);
@@ -1210,7 +1418,11 @@ function extractRunningThresholdHrBpm(payload) {
 }
 
 function convertPercentEdgesToBpmZones(percentEdges, thresholdHrBpm) {
-  if (!Number.isFinite(thresholdHrBpm) || thresholdHrBpm < 120 || thresholdHrBpm > 240) {
+  if (
+    !Number.isFinite(thresholdHrBpm) ||
+    thresholdHrBpm < 120 ||
+    thresholdHrBpm > 240
+  ) {
     return [];
   }
   const bpmEdges = percentEdges
@@ -1222,10 +1434,17 @@ function convertPercentEdgesToBpmZones(percentEdges, thresholdHrBpm) {
 }
 
 function buildFiveZonesFromThresholdHr(thresholdHrBpm) {
-  if (!Number.isFinite(thresholdHrBpm) || thresholdHrBpm < 120 || thresholdHrBpm > 240) {
+  if (
+    !Number.isFinite(thresholdHrBpm) ||
+    thresholdHrBpm < 120 ||
+    thresholdHrBpm > 240
+  ) {
     return [];
   }
-  return convertPercentEdgesToBpmZones(DEFAULT_LTHR_ZONE_EDGE_PCTS, thresholdHrBpm);
+  return convertPercentEdgesToBpmZones(
+    DEFAULT_LTHR_ZONE_EDGE_PCTS,
+    thresholdHrBpm,
+  );
 }
 
 function hrZoneIndexForBpm(zones, bpm) {
@@ -1251,7 +1470,9 @@ function computeRunHrZoneDurations(activity, zones) {
   }
   const zoneSeconds = Array.from({ length: zones.length }, () => 0);
 
-  const streamPoints = Array.isArray(activity?.detailStreamPoints) ? activity.detailStreamPoints : [];
+  const streamPoints = Array.isArray(activity?.detailStreamPoints)
+    ? activity.detailStreamPoints
+    : [];
   if (streamPoints.length >= 2) {
     for (let i = 1; i < streamPoints.length; i += 1) {
       const prevSec = Number(streamPoints[i - 1]?.elapsedSec);
@@ -1272,12 +1493,18 @@ function computeRunHrZoneDurations(activity, zones) {
     return zoneSeconds.map((value) => Math.max(0, Math.round(value)));
   }
 
-  const intervalPoints = Array.isArray(activity?.intervalPoints) ? activity.intervalPoints : [];
+  const intervalPoints = Array.isArray(activity?.intervalPoints)
+    ? activity.intervalPoints
+    : [];
   if (intervalPoints.length) {
     for (const interval of intervalPoints) {
       const seconds = Number(interval?.movingTimeSec);
       const hrBpm = Number(interval?.avgHrBpm);
-      if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isFinite(hrBpm)) {
+      if (
+        !Number.isFinite(seconds) ||
+        seconds <= 0 ||
+        !Number.isFinite(hrBpm)
+      ) {
         continue;
       }
       const zoneIndex = hrZoneIndexForBpm(zones, hrBpm);
@@ -1293,7 +1520,11 @@ function computeRunHrZoneDurations(activity, zones) {
 
   const movingTimeSec = Number(activity?.movingTimeSec);
   const avgHrBpm = Number(activity?.avgHrBpm);
-  if (Number.isFinite(movingTimeSec) && movingTimeSec > 0 && Number.isFinite(avgHrBpm)) {
+  if (
+    Number.isFinite(movingTimeSec) &&
+    movingTimeSec > 0 &&
+    Number.isFinite(avgHrBpm)
+  ) {
     const zoneIndex = hrZoneIndexForBpm(zones, avgHrBpm);
     if (zoneIndex >= 0) {
       zoneSeconds[zoneIndex] = Math.round(movingTimeSec);
@@ -1302,37 +1533,115 @@ function computeRunHrZoneDurations(activity, zones) {
   return zoneSeconds.map((value) => Math.max(0, Math.round(value)));
 }
 
-async function enrichActivitiesWithPaceHrPoints(apiKey, activities) {
+async function enrichActivitiesWithPaceHrPoints(
+  apiKey,
+  activities,
+  options = {},
+) {
   let streamsUnsupported = false;
+  let browserBlocked = false;
   let rebuiltRuns = 0;
   let pointCount = 0;
   let failedRuns = 0;
   let cacheHits = 0;
   let cursor = 0;
+  let completedActivities = 0;
+  const processingOrder = activities
+    .map((activity, index) => ({ activity, index }))
+    .sort((left, right) => {
+      const leftStartDateTime =
+        typeof left.activity?.startDateTime === "string"
+          ? left.activity.startDateTime
+          : "";
+      const rightStartDateTime =
+        typeof right.activity?.startDateTime === "string"
+          ? right.activity.startDateTime
+          : "";
+      const startDateTimeComparison =
+        rightStartDateTime.localeCompare(leftStartDateTime);
+      if (startDateTimeComparison !== 0) {
+        return startDateTimeComparison;
+      }
+
+      const leftDate =
+        typeof left.activity?.date === "string" ? left.activity.date : "";
+      const rightDate =
+        typeof right.activity?.date === "string" ? right.activity.date : "";
+      const dateComparison = rightDate.localeCompare(leftDate);
+      if (dateComparison !== 0) {
+        return dateComparison;
+      }
+
+      const leftId =
+        typeof left.activity?.id === "string"
+          ? left.activity.id
+          : String(left.activity?.id ?? "");
+      const rightId =
+        typeof right.activity?.id === "string"
+          ? right.activity.id
+          : String(right.activity?.id ?? "");
+      const idComparison = rightId.localeCompare(leftId);
+      if (idComparison !== 0) {
+        return idComparison;
+      }
+
+      return left.index - right.index;
+    });
+  const onProgress =
+    typeof options?.onProgress === "function" ? options.onProgress : null;
+  const forceRefreshActivity =
+    typeof options?.forceRefreshActivity === "function"
+      ? options.forceRefreshActivity
+      : null;
+  const signal = options?.signal;
+
+  async function reportProgress(
+    activity,
+    stage,
+    isFinalForActivity,
+    details = {},
+  ) {
+    if (!onProgress || !activity || typeof activity !== "object") {
+      return;
+    }
+
+    await onProgress({
+      activity,
+      stage,
+      isFinalForActivity,
+      completedActivities,
+      totalActivities: activities.length,
+      ...details,
+    });
+  }
 
   async function worker() {
     while (true) {
+      throwIfAborted(signal);
       const index = cursor;
       cursor += 1;
 
-      if (index >= activities.length) {
+      if (index >= processingOrder.length) {
         return;
       }
 
-      const activity = activities[index];
+      const activity = processingOrder[index]?.activity;
       if (!activity || typeof activity !== "object") {
         continue;
       }
 
       if (
-        activity.intervalSourceVersion === INTERVAL_SOURCE_VERSION &&
+        !forceRefreshActivity?.(activity) &&
+        activity.detailsFetched === true &&
         Array.isArray(activity.intervalPoints) &&
-        activity.splitSourceVersion === SPLIT_SOURCE_VERSION &&
-        Array.isArray(activity.splitKmPoints) &&
-        activity.metaSourceVersion === ACTIVITY_META_SOURCE_VERSION
+        activity.splitsResolved === true &&
+        Array.isArray(activity.splitKmPoints)
       ) {
         cacheHits += 1;
-        pointCount += activity.intervalPoints.length + activity.splitKmPoints.length;
+        pointCount +=
+          activity.intervalPoints.length + activity.splitKmPoints.length;
+        completedActivities += 1;
+        await reportProgress(activity, "cached", true);
         continue;
       }
 
@@ -1344,128 +1653,229 @@ async function enrichActivitiesWithPaceHrPoints(apiKey, activities) {
         avgTempC: activity.avgTempC,
         maxHrBpm: activity.maxHrBpm,
         load: activity.load,
-        metaSourceVersion: activity.metaSourceVersion,
-        intervalPoints: Array.isArray(activity.intervalPoints) ? activity.intervalPoints : [],
-        intervalSourceVersion: activity.intervalSourceVersion,
-        splitKmPoints: Array.isArray(activity.splitKmPoints) ? activity.splitKmPoints : [],
-        splitSourceVersion: activity.splitSourceVersion
+        detailsFetched: activity.detailsFetched === true,
+        intervalPoints: Array.isArray(activity.intervalPoints)
+          ? activity.intervalPoints
+          : [],
+        splitKmPoints: Array.isArray(activity.splitKmPoints)
+          ? activity.splitKmPoints
+          : [],
+        splitsResolved: activity.splitsResolved === true,
       };
 
       try {
-        const { unsupported: detailsUnsupported, payload: detailPayload } = await fetchActivityWithIntervals(apiKey, activity.id);
+        const {
+          unsupported: detailsUnsupported,
+          unsupportedReason: detailUnsupportedReason,
+          payload: detailPayload,
+        } = await fetchActivityWithIntervals(apiKey, activity.id, { signal });
         if (detailsUnsupported) {
-          activity.intervalPoints = [];
-          activity.intervalSourceVersion = 0;
-          activity.metaSourceVersion = ACTIVITY_META_SOURCE_VERSION;
+          if (detailUnsupportedReason === "browser_blocked") {
+            browserBlocked = true;
+            streamsUnsupported = true;
+            activity.name = previousState.name ?? activity.name;
+            activity.startDateTime =
+              previousState.startDateTime ?? activity.startDateTime;
+            activity.movingTimeSec =
+              previousState.movingTimeSec ?? activity.movingTimeSec;
+            activity.elevationGainM =
+              previousState.elevationGainM ?? activity.elevationGainM;
+            activity.avgTempC = previousState.avgTempC ?? activity.avgTempC;
+            activity.maxHrBpm = previousState.maxHrBpm ?? activity.maxHrBpm;
+            activity.load = previousState.load ?? activity.load;
+            activity.detailsFetched = previousState.detailsFetched === true;
+            activity.intervalPoints = previousState.intervalPoints;
+            activity.splitKmPoints = previousState.splitKmPoints;
+            activity.splitsResolved = previousState.splitsResolved === true;
+            completedActivities += 1;
+            await reportProgress(activity, "detail", true, {
+              browserBlocked: true,
+              unsupported: true,
+            });
+            continue;
+          }
+
+          activity.intervalPoints = previousState.intervalPoints;
+          activity.detailsFetched = previousState.detailsFetched === true;
         } else {
-          const detailName = normalizeActivityName(detailPayload, normalizeActivityName(activity, null));
+          const detailName = normalizeActivityName(
+            detailPayload,
+            normalizeActivityName(activity, null),
+          );
           if (detailName) {
             activity.name = detailName;
           }
           const detailStartDateTime = normalizeActivityStartDateTime(
             detailPayload,
-            normalizeActivityStartDateTime(activity, null)
+            normalizeActivityStartDateTime(activity, null),
           );
           if (detailStartDateTime) {
             activity.startDateTime = detailStartDateTime;
           }
-          activity.movingTimeSec = normalizeMovingTimeSec(detailPayload, normalizeMovingTimeSec(activity, null));
-          activity.elevationGainM = normalizeElevationGainM(detailPayload, normalizeElevationGainM(activity, null));
-          activity.avgTempC = normalizeAvgTempC(detailPayload, normalizeAvgTempC(activity, null));
-          activity.maxHrBpm = normalizeMaxHrBpm(detailPayload, normalizeMaxHrBpm(activity, null));
-          activity.load = normalizeLoad(detailPayload, normalizeLoad(activity, null));
-          activity.metaSourceVersion = ACTIVITY_META_SOURCE_VERSION;
+          activity.movingTimeSec = normalizeMovingTimeSec(
+            detailPayload,
+            normalizeMovingTimeSec(activity, null),
+          );
+          activity.elevationGainM = normalizeElevationGainM(
+            detailPayload,
+            normalizeElevationGainM(activity, null),
+          );
+          activity.avgTempC = normalizeAvgTempC(
+            detailPayload,
+            normalizeAvgTempC(activity, null),
+          );
+          activity.maxHrBpm = normalizeMaxHrBpm(
+            detailPayload,
+            normalizeMaxHrBpm(activity, null),
+          );
+          activity.load = normalizeLoad(
+            detailPayload,
+            normalizeLoad(activity, null),
+          );
+          activity.detailsFetched = true;
 
           const intervalPoints = buildIntervalPoints(activity, detailPayload);
           activity.intervalPoints = intervalPoints;
-          activity.intervalSourceVersion = INTERVAL_SOURCE_VERSION;
           pointCount += intervalPoints.length;
         }
 
         // If interval blocks look coarse (for example one big WORK block), derive per-km points from streams.
-        const hasIntervalPoints = Array.isArray(activity.intervalPoints) && activity.intervalPoints.length > 0;
-        const shouldDeriveSplits = shouldDerivePerKmSplitsFromStreams(activity, activity.intervalPoints);
+        const hasIntervalPoints =
+          Array.isArray(activity.intervalPoints) &&
+          activity.intervalPoints.length > 0;
+        const shouldDeriveSplits = shouldDerivePerKmSplitsFromStreams(
+          activity,
+          activity.intervalPoints,
+        );
         if (hasIntervalPoints && !shouldDeriveSplits) {
           activity.splitKmPoints = [];
-          activity.splitSourceVersion = SPLIT_SOURCE_VERSION;
+          activity.splitsResolved = true;
           rebuiltRuns += 1;
+          completedActivities += 1;
+          await reportProgress(activity, "detail", true, {
+            streamFetchSkipped: true,
+            unsupported: detailsUnsupported === true,
+          });
           continue;
         }
 
-        const { unsupported: notSupported, payload } = await fetchActivityStreams(apiKey, activity.id);
+        await reportProgress(activity, "detail", false, {
+          unsupported: detailsUnsupported === true,
+        });
+
+        const {
+          unsupported: notSupported,
+          unsupportedReason,
+          payload,
+        } = await fetchActivityStreams(apiKey, activity.id, { signal });
         if (notSupported) {
           streamsUnsupported = true;
-          activity.splitKmPoints = [];
-          activity.splitSourceVersion = 0;
+          if (unsupportedReason === "browser_blocked") {
+            browserBlocked = true;
+            activity.splitKmPoints = previousState.splitKmPoints;
+            activity.splitsResolved = previousState.splitsResolved === true;
+          } else {
+            activity.splitKmPoints = [];
+            activity.splitsResolved = true;
+          }
+          completedActivities += 1;
+          await reportProgress(activity, "streams", true, {
+            browserBlocked: unsupportedReason === "browser_blocked",
+            unsupported: true,
+          });
           continue;
         }
 
         const points = buildPerKmSplitPoints(activity, payload);
         activity.splitKmPoints = points;
-        activity.splitSourceVersion = SPLIT_SOURCE_VERSION;
+        activity.splitsResolved = true;
         rebuiltRuns += 1;
         pointCount += points.length;
+        completedActivities += 1;
+        await reportProgress(activity, "streams", true);
       } catch {
+        if (signal?.aborted) {
+          throw createAbortError();
+        }
         failedRuns += 1;
         activity.name = previousState.name;
         activity.startDateTime = previousState.startDateTime;
         activity.movingTimeSec = previousState.movingTimeSec;
         activity.elevationGainM = previousState.elevationGainM;
         activity.avgTempC = previousState.avgTempC;
-        activity.metaSourceVersion = previousState.metaSourceVersion;
+        activity.detailsFetched = previousState.detailsFetched === true;
         activity.intervalPoints = previousState.intervalPoints;
-        activity.intervalSourceVersion = previousState.intervalSourceVersion;
         activity.splitKmPoints = previousState.splitKmPoints;
-        activity.splitSourceVersion = previousState.splitSourceVersion;
+        activity.splitsResolved = previousState.splitsResolved === true;
+        completedActivities += 1;
+        await reportProgress(activity, "failed", true);
       }
     }
   }
 
-  const concurrency = Math.min(SPLIT_FETCH_CONCURRENCY, Math.max(1, activities.length));
+  const concurrency = Math.min(
+    SPLIT_FETCH_CONCURRENCY,
+    Math.max(1, activities.length),
+  );
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-  return { pointCount, rebuiltRuns, failedRuns, cacheHits, unsupported: streamsUnsupported };
+  return {
+    pointCount,
+    rebuiltRuns,
+    failedRuns,
+    cacheHits,
+    unsupported: streamsUnsupported,
+    browserBlocked,
+  };
 }
 
+/** @returns {import("$lib/types/app").PaceHrPoint[]} */
 function collectPaceHrPoints(activities) {
   const points = [];
 
   for (const activity of activities) {
-    const intervalPoints = Array.isArray(activity.intervalPoints) ? activity.intervalPoints : [];
+    const activityName = normalizeActivityName(activity, null);
+    const intervalPoints = Array.isArray(activity.intervalPoints)
+      ? activity.intervalPoints
+      : [];
     const usableIntervals = intervalPoints.filter(
       (point) =>
         point &&
-        (point.chartEligible === true ||
-          point.chartEligible === undefined) &&
+        (point.chartEligible === true || point.chartEligible === undefined) &&
         Number.isFinite(Number(point.paceMinKm)) &&
         Number(point.paceMinKm) > 0 &&
         Number.isFinite(Number(point.avgHrBpm)) &&
-        Number(point.avgHrBpm) > 0
+        Number(point.avgHrBpm) > 0,
     );
 
-    const splitPoints = Array.isArray(activity.splitKmPoints) ? activity.splitKmPoints : [];
+    const splitPoints = Array.isArray(activity.splitKmPoints)
+      ? activity.splitKmPoints
+      : [];
     const usableSplits = splitPoints.filter(
       (point) =>
         point &&
         Number.isFinite(Number(point.paceMinKm)) &&
         Number(point.paceMinKm) > 0 &&
         Number.isFinite(Number(point.avgHrBpm)) &&
-        Number(point.avgHrBpm) > 0
+        Number(point.avgHrBpm) > 0,
     );
 
     const preferSplits =
-      usableSplits.length > 0 && (usableIntervals.length <= 2 || usableSplits.length > usableIntervals.length);
+      usableSplits.length > 0 &&
+      (usableIntervals.length <= 2 ||
+        usableSplits.length > usableIntervals.length);
 
     if (usableIntervals.length && !preferSplits) {
       for (const interval of usableIntervals) {
         points.push({
           source: "interval",
           activityId: activity.id,
+          activityName,
           date: activity.date,
           splitKm: Number(interval.intervalIndex ?? 0),
           distanceKm: Number(interval.distanceKm ?? 0),
           paceMinKm: Number(interval.paceMinKm),
-          avgHrBpm: Number(interval.avgHrBpm)
+          avgHrBpm: Number(interval.avgHrBpm),
         });
       }
       continue;
@@ -1476,17 +1886,18 @@ function collectPaceHrPoints(activities) {
         points.push({
           source: "split-km",
           activityId: activity.id,
+          activityName,
           date: activity.date,
           splitKm: Number(split.splitKm ?? 0),
           distanceKm: Number(split.splitDistanceKm ?? 1),
           paceMinKm: Number(split.paceMinKm),
-          avgHrBpm: Number(split.avgHrBpm)
+          avgHrBpm: Number(split.avgHrBpm),
         });
       }
       continue;
     }
 
-    const runPaceOk = activity.paceSourceVersion === PACE_SOURCE_VERSION && Number.isFinite(Number(activity.paceMinKm));
+    const runPaceOk = Number.isFinite(Number(activity.paceMinKm));
     const runHrOk = Number.isFinite(Number(activity.avgHrBpm));
     if (!runPaceOk || !runHrOk) {
       continue;
@@ -1495,11 +1906,12 @@ function collectPaceHrPoints(activities) {
     points.push({
       source: "run",
       activityId: activity.id,
+      activityName,
       date: activity.date,
       splitKm: null,
       distanceKm: Number(activity.distanceKm ?? 0),
       paceMinKm: Number(activity.paceMinKm),
-      avgHrBpm: Number(activity.avgHrBpm)
+      avgHrBpm: Number(activity.avgHrBpm),
     });
   }
 
@@ -1526,12 +1938,27 @@ function normalizeActivities(items, existingById = new Map()) {
     const paceMinKm = sanitizePaceMinKm(normalizePaceMinKm(item, km));
 
     const existingByRawId = item.id ? existingById.get(String(item.id)) : null;
-    const movingTimeSec = normalizeMovingTimeSec(item, normalizeMovingTimeSec(existingByRawId, null));
-    const elevationGainM = normalizeElevationGainM(item, normalizeElevationGainM(existingByRawId, null));
-    const avgTempC = normalizeAvgTempC(item, normalizeAvgTempC(existingByRawId, null));
-    const maxHrBpm = normalizeMaxHrBpm(item, normalizeMaxHrBpm(existingByRawId, null));
+    const movingTimeSec = normalizeMovingTimeSec(
+      item,
+      normalizeMovingTimeSec(existingByRawId, null),
+    );
+    const elevationGainM = normalizeElevationGainM(
+      item,
+      normalizeElevationGainM(existingByRawId, null),
+    );
+    const avgTempC = normalizeAvgTempC(
+      item,
+      normalizeAvgTempC(existingByRawId, null),
+    );
+    const maxHrBpm = normalizeMaxHrBpm(
+      item,
+      normalizeMaxHrBpm(existingByRawId, null),
+    );
     const load = normalizeLoad(item, normalizeLoad(existingByRawId, null));
-    const startDateTime = normalizeActivityStartDateTime(item, normalizeActivityStartDateTime(existingByRawId, ""));
+    const startDateTime = normalizeActivityStartDateTime(
+      item,
+      normalizeActivityStartDateTime(existingByRawId, ""),
+    );
     if (!startDateTime) {
       continue;
     }
@@ -1542,27 +1969,40 @@ function normalizeActivities(items, existingById = new Map()) {
 
     const id = String(item.id || `${date}-${Math.random()}`);
     const cached = existingById.get(id);
-    const cachedIntervals =
-      cached?.intervalSourceVersion === INTERVAL_SOURCE_VERSION && Array.isArray(cached?.intervalPoints) ? cached.intervalPoints : [];
-    const cachedSplits =
-      cached?.splitSourceVersion === SPLIT_SOURCE_VERSION && Array.isArray(cached?.splitKmPoints) ? cached.splitKmPoints : [];
-    const cachedDetailStreams =
-      cached?.detailStreamSourceVersion === DETAIL_STREAM_SOURCE_VERSION && Array.isArray(cached?.detailStreamPoints)
-        ? cached.detailStreamPoints
-        : [];
-    const resolvedName = normalizeActivityName(item, normalizeActivityName(cached, null));
-    const resolvedStartDateTime = normalizeActivityStartDateTime(item, normalizeActivityStartDateTime(cached, startDateTime));
-    const resolvedMovingTimeSec = normalizeMovingTimeSec(item, normalizeMovingTimeSec(cached, movingTimeSec));
-    const resolvedElevationGainM = normalizeElevationGainM(item, normalizeElevationGainM(cached, elevationGainM));
-    const resolvedAvgTempC = normalizeAvgTempC(item, normalizeAvgTempC(cached, avgTempC));
-    const resolvedMaxHrBpm = normalizeMaxHrBpm(item, normalizeMaxHrBpm(cached, maxHrBpm));
+    const cachedIntervals = Array.isArray(cached?.intervalPoints)
+      ? cached.intervalPoints
+      : [];
+    const cachedSplits = Array.isArray(cached?.splitKmPoints)
+      ? cached.splitKmPoints
+      : [];
+    const cachedDetailStreams = Array.isArray(cached?.detailStreamPoints)
+      ? cached.detailStreamPoints
+      : [];
+    const resolvedName = normalizeActivityName(
+      item,
+      normalizeActivityName(cached, null),
+    );
+    const resolvedStartDateTime = normalizeActivityStartDateTime(
+      item,
+      normalizeActivityStartDateTime(cached, startDateTime),
+    );
+    const resolvedMovingTimeSec = normalizeMovingTimeSec(
+      item,
+      normalizeMovingTimeSec(cached, movingTimeSec),
+    );
+    const resolvedElevationGainM = normalizeElevationGainM(
+      item,
+      normalizeElevationGainM(cached, elevationGainM),
+    );
+    const resolvedAvgTempC = normalizeAvgTempC(
+      item,
+      normalizeAvgTempC(cached, avgTempC),
+    );
+    const resolvedMaxHrBpm = normalizeMaxHrBpm(
+      item,
+      normalizeMaxHrBpm(cached, maxHrBpm),
+    );
     const resolvedLoad = normalizeLoad(item, normalizeLoad(cached, load));
-    const cachedMetaVersion = Number(cached?.metaSourceVersion);
-    const resolvedMetaVersion =
-      Number.isFinite(cachedMetaVersion) && Math.round(cachedMetaVersion) === ACTIVITY_META_SOURCE_VERSION
-        ? ACTIVITY_META_SOURCE_VERSION
-        : 0;
-
     byId.set(id, {
       id,
       date,
@@ -1573,18 +2013,16 @@ function normalizeActivities(items, existingById = new Map()) {
       avgTempC: resolvedAvgTempC,
       maxHrBpm: resolvedMaxHrBpm,
       load: resolvedLoad,
-      metaSourceVersion: resolvedMetaVersion,
+      detailsFetched: cached?.detailsFetched === true,
       type: item.type,
       distanceKm: Number(km.toFixed(3)),
       avgHrBpm,
       paceMinKm,
-      paceSourceVersion: PACE_SOURCE_VERSION,
-      intervalSourceVersion: cached?.intervalSourceVersion ?? 0,
       intervalPoints: cachedIntervals,
-      splitSourceVersion: cached?.splitSourceVersion ?? 0,
+      splitsResolved: cached?.splitsResolved === true,
       splitKmPoints: cachedSplits,
-      detailStreamSourceVersion: cached?.detailStreamSourceVersion ?? 0,
-      detailStreamPoints: cachedDetailStreams
+      detailStreamsFetched: cached?.detailStreamsFetched === true,
+      detailStreamPoints: cachedDetailStreams,
     });
   }
 
@@ -1606,13 +2044,19 @@ function computeRollingSeries(activities, daysToShow = 365) {
 
   const firstDate = parseDateKey(activities[0].date);
   const hasFiniteWindow = Number.isFinite(daysToShow) && daysToShow > 0;
-  const chartStart = hasFiniteWindow ? addDaysUTC(today, -Math.round(daysToShow) + 1) : firstDate;
+  const chartStart = hasFiniteWindow
+    ? addDaysUTC(today, -Math.round(daysToShow) + 1)
+    : firstDate;
   const fullStart = firstDate < chartStart ? firstDate : chartStart;
 
   const dates = [];
   const totals = [];
 
-  for (let current = new Date(fullStart); current <= today; current = addDaysUTC(current, 1)) {
+  for (
+    let current = new Date(fullStart);
+    current <= today;
+    current = addDaysUTC(current, 1)
+  ) {
     const key = formatDateUTC(current);
     dates.push(key);
     totals.push(totalsByDate.get(key) ?? 0);
@@ -1649,7 +2093,12 @@ function computeRollingSeries(activities, daysToShow = 365) {
     return values.reduce((acc, value) => acc + value, 0) / values.length;
   }
 
-  const chartIndex = hasFiniteWindow ? Math.max(0, dates.findIndex((d) => d >= formatDateUTC(chartStart))) : 0;
+  const chartIndex = hasFiniteWindow
+    ? Math.max(
+        0,
+        dates.findIndex((d) => d >= formatDateUTC(chartStart)),
+      )
+    : 0;
 
   const series = [];
   const sum7Series = [];
@@ -1669,7 +2118,7 @@ function computeRollingSeries(activities, daysToShow = 365) {
       sum28: rollingSum(i, 28),
       sum30: rollingSum(i, 30),
       sum90: rollingSum(i, 90),
-      sum180: rollingSum(i, 180)
+      sum180: rollingSum(i, 180),
     });
   }
 
@@ -1687,7 +2136,7 @@ function computeRollingSeries(activities, daysToShow = 365) {
       weekBuckets.set(weekStart, {
         start: weekStart,
         km: 0,
-        indices: []
+        indices: [],
       });
     }
     const bucket = weekBuckets.get(weekStart);
@@ -1695,7 +2144,9 @@ function computeRollingSeries(activities, daysToShow = 365) {
     bucket.indices.push(i);
   }
 
-  const orderedWeeks = Array.from(weekBuckets.values()).sort((a, b) => a.start.localeCompare(b.start));
+  const orderedWeeks = Array.from(weekBuckets.values()).sort((a, b) =>
+    a.start.localeCompare(b.start),
+  );
   const LONG_WINDOW_WEEKS = 26;
   const RECENT_WINDOW_WEEKS = 4;
   const WEIGHT_LONG = 0.8;
@@ -1714,8 +2165,12 @@ function computeRollingSeries(activities, daysToShow = 365) {
       tol = currentWeek.km;
     } else {
       const history = orderedWeeks.slice(0, i).map((entry) => entry.km);
-      const recent = orderedWeeks.slice(Math.max(0, i - RECENT_WINDOW_WEEKS), i).map((entry) => entry.km);
-      const long = orderedWeeks.slice(Math.max(0, i - LONG_WINDOW_WEEKS), i).map((entry) => entry.km);
+      const recent = orderedWeeks
+        .slice(Math.max(0, i - RECENT_WINDOW_WEEKS), i)
+        .map((entry) => entry.km);
+      const long = orderedWeeks
+        .slice(Math.max(0, i - LONG_WINDOW_WEEKS), i)
+        .map((entry) => entry.km);
 
       const recentMean = mean(recent.length ? recent : history);
       const longMean = mean(long.length ? long : history);
@@ -1748,7 +2203,11 @@ function computeRollingSeries(activities, daysToShow = 365) {
 }
 
 function baselineStatusFromValues(current, baseline) {
-  if (!Number.isFinite(current) || !Number.isFinite(baseline) || baseline <= 0) {
+  if (
+    !Number.isFinite(current) ||
+    !Number.isFinite(baseline) ||
+    baseline <= 0
+  ) {
     return "n/a";
   }
 
@@ -1765,33 +2224,58 @@ function baselineStatusFromValues(current, baseline) {
   return "near baseline";
 }
 
-async function fetchIntervalsActivities(apiKey, lookbackDays, existingById = new Map()) {
+async function fetchIntervalsActivities(
+  apiKey,
+  lookbackDays,
+  existingById = new Map(),
+  options = {},
+) {
   const newestDate = formatDateUTC(new Date());
   const oldestDate =
     Number.isFinite(lookbackDays) && lookbackDays > 0
-      ? formatDateUTC(addDaysUTC(parseDateKey(newestDate), -Math.round(lookbackDays)))
+      ? formatDateUTC(
+          addDaysUTC(parseDateKey(newestDate), -Math.round(lookbackDays)),
+        )
       : "1970-01-01";
-  return fetchIntervalsActivitiesInRange(apiKey, oldestDate, newestDate, existingById);
+  return fetchIntervalsActivitiesInRange(
+    apiKey,
+    oldestDate,
+    newestDate,
+    existingById,
+    options,
+  );
 }
 
-async function fetchIntervalsActivitiesInRange(apiKey, oldestDate, newestDate, existingById = new Map()) {
+async function fetchIntervalsActivitiesInRange(
+  apiKey,
+  oldestDate,
+  newestDate,
+  existingById = new Map(),
+  options = {},
+) {
   const url = new URL("https://intervals.icu/api/v1/athlete/0/activities");
   url.searchParams.set("oldest", oldestDate);
   url.searchParams.set("newest", newestDate);
 
-  const auth = Buffer.from(`API_KEY:${apiKey}`, "utf8").toString("base64");
+  const auth = encodeBasicAuth(apiKey);
+  const signal = options?.signal;
+  throwIfAborted(signal);
+  await throttleIntervalsRequest(signal);
 
   const response = await fetch(url, {
     headers: {
       Authorization: `Basic ${auth}`,
-      Accept: "application/json"
-    }
+      Accept: "application/json",
+    },
+    signal,
   });
 
   if (!response.ok) {
     const body = await response.text();
     const shortBody = body.length > 400 ? `${body.slice(0, 400)}...` : body;
-    throw new Error(`Intervals.icu API ${response.status}: ${shortBody || response.statusText}`);
+    throw new Error(
+      `Intervals.icu API ${response.status}: ${shortBody || response.statusText}`,
+    );
   }
 
   const payload = await response.json();
@@ -1814,8 +2298,12 @@ function normalizeLookbackDaysValue(requested, fallback = 365) {
 }
 
 function resolveStoredLookbackInfo(data) {
-  const mode = data?.lookbackMode === "all" || data?.lookbackDays === "all" ? "all" : "days";
-  const days = mode === "all" ? null : normalizeLookbackDaysValue(data?.lookbackDays, 365);
+  const mode =
+    data?.lookbackMode === "all" || data?.lookbackDays === "all"
+      ? "all"
+      : "days";
+  const days =
+    mode === "all" ? null : normalizeLookbackDaysValue(data?.lookbackDays, 365);
   return { lookbackMode: mode, lookbackDays: days };
 }
 
@@ -1837,7 +2325,12 @@ function latestActivityDateKey(activities) {
   return latest;
 }
 
-function deriveIncrementalOldestDate(currentData, previousActivities, fallbackLookbackDays, newestDate) {
+function deriveIncrementalOldestDate(
+  currentData,
+  previousActivities,
+  fallbackLookbackDays,
+  newestDate,
+) {
   const syncedAtMs = Date.parse(String(currentData?.syncedAt || ""));
   const latestExistingDate = latestActivityDateKey(previousActivities);
   let anchorDate = null;
@@ -1849,11 +2342,15 @@ function deriveIncrementalOldestDate(currentData, previousActivities, fallbackLo
   }
 
   if (anchorDate && isDateKey(anchorDate)) {
-    return formatDateUTC(addDaysUTC(parseDateKey(anchorDate), -INCREMENTAL_ROLLING_BACKFILL_DAYS));
+    return formatDateUTC(
+      addDaysUTC(parseDateKey(anchorDate), -INCREMENTAL_ROLLING_BACKFILL_DAYS),
+    );
   }
 
   if (Number.isFinite(fallbackLookbackDays) && fallbackLookbackDays > 0) {
-    return formatDateUTC(addDaysUTC(parseDateKey(newestDate), -Math.round(fallbackLookbackDays)));
+    return formatDateUTC(
+      addDaysUTC(parseDateKey(newestDate), -Math.round(fallbackLookbackDays)),
+    );
   }
 
   return "1970-01-01";
@@ -1861,11 +2358,36 @@ function deriveIncrementalOldestDate(currentData, previousActivities, fallbackLo
 
 function deriveUpdateOldestDate(previousActivities, newestDate) {
   const latestExistingDate = latestActivityDateKey(previousActivities);
-  const minRecentDate = formatDateUTC(addDaysUTC(parseDateKey(newestDate), -30));
+  const minRecentDate = formatDateUTC(
+    addDaysUTC(parseDateKey(newestDate), -UPDATE_RECENT_RELOAD_DAYS),
+  );
   if (latestExistingDate && isDateKey(latestExistingDate)) {
-    return latestExistingDate < minRecentDate ? latestExistingDate : minRecentDate;
+    return latestExistingDate < minRecentDate
+      ? latestExistingDate
+      : minRecentDate;
   }
   return minRecentDate;
+}
+
+function shouldForceRefreshActivityOnUpdate(
+  activity,
+  newestDate,
+  reloadWindowDays = UPDATE_RECENT_RELOAD_DAYS,
+) {
+  const activityDate = String(activity?.date || "");
+  if (!isDateKey(activityDate) || !isDateKey(newestDate)) {
+    return false;
+  }
+
+  const days = Number(reloadWindowDays);
+  if (!Number.isFinite(days) || days <= 0) {
+    return false;
+  }
+
+  const refreshOldestDate = formatDateUTC(
+    addDaysUTC(parseDateKey(newestDate), -Math.round(days)),
+  );
+  return activityDate >= refreshOldestDate;
 }
 
 function mergeActivitiesById(existingActivities, fetchedActivities) {
@@ -1904,499 +2426,41 @@ function mergeActivitiesById(existingActivities, fetchedActivities) {
   });
 }
 
-async function handleApi(req, res, url) {
-  if (url.pathname === "/api/dev/reload-meta" && req.method === "GET") {
-    return jsonResponse(res, 200, {
-      enabled: DEV_LIVE_RELOAD_ENABLED,
-      token: DEV_LIVE_RELOAD_ENABLED ? DEV_RELOAD_TOKEN : null
-    });
-  }
-
-  if (url.pathname === "/api/dev/reload-events" && req.method === "GET") {
-    if (!DEV_LIVE_RELOAD_ENABLED) {
-      return jsonResponse(res, 404, { error: "Not found." });
-    }
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no"
-    });
-
-    if (typeof res.flushHeaders === "function") {
-      res.flushHeaders();
-    }
-
-    const sendReloadToken = () => {
-      writeSseEvent(res, "reload-token", { token: DEV_RELOAD_TOKEN, at: new Date().toISOString() });
-    };
-    sendReloadToken();
-
-    const heartbeatMs = 20_000;
-    const heartbeat = setInterval(() => {
-      writeSseEvent(res, "ping", { at: new Date().toISOString() });
-    }, heartbeatMs);
-
-    req.on("close", () => {
-      clearInterval(heartbeat);
-    });
-    req.on("aborted", () => {
-      clearInterval(heartbeat);
-    });
-    return;
-  }
-
-  if (url.pathname === "/api/settings" && req.method === "GET") {
-    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
-    const hasApiKey = typeof settings.apiKey === "string" && settings.apiKey.length > 0;
-    return jsonResponse(res, 200, {
-      hasApiKey,
-      runningThresholdHrOverride: settings.runningThresholdHrOverride,
-      hrZonesRunningOverride: settings.hrZonesRunningOverride
-    });
-  }
-
-  if (url.pathname === "/api/settings" && req.method === "PUT") {
-    try {
-      const body = await parseJsonBody(req);
-      const currentSettings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
-      const nextSettings = {
-        ...currentSettings
-      };
-      if (Object.prototype.hasOwnProperty.call(body, "apiKey")) {
-        nextSettings.apiKey = String(body.apiKey || "").trim();
-      }
-      if (Object.prototype.hasOwnProperty.call(body, "runningThresholdHrOverride")) {
-        nextSettings.runningThresholdHrOverride = normalizeThresholdOverride(body.runningThresholdHrOverride);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, "hrZonesRunningOverride")) {
-        nextSettings.hrZonesRunningOverride = normalizeHrZoneOverrideRows(body.hrZonesRunningOverride);
-      }
-
-      const activityData = await readJson(ACTIVITIES_FILE, {
-        syncedAt: null,
-        lookbackMode: "days",
-        lookbackDays: 365,
-        runningThresholdHr: null,
-        activities: []
-      });
-      const resolved = resolveRunningHrZoneConfiguration(activityData?.runningThresholdHr, nextSettings);
-      const hasOverrides =
-        resolved.runningThresholdHrOverride !== null || hasAnyHrZoneOverrides(resolved.hrZonesRunningOverride);
-      if (hasOverrides && !resolved.hrZonesRunning.length) {
-        return jsonResponse(res, 400, {
-          error:
-            "Overrides do not produce a valid 5-zone setup. Provide a threshold override or a complete set of zone overrides."
-        });
-      }
-
-      await writeJson(SETTINGS_FILE, nextSettings);
-      return jsonResponse(res, 200, {
-        ok: true,
-        hasApiKey: nextSettings.apiKey.length > 0,
-        runningThresholdHrOverride: nextSettings.runningThresholdHrOverride,
-        hrZonesRunningOverride: nextSettings.hrZonesRunningOverride
-      });
-    } catch (error) {
-      return jsonResponse(res, 400, { error: error.message || "Invalid settings payload." });
-    }
-  }
-
-  if (url.pathname === "/api/local-data/reset" && req.method === "POST") {
-    let body = {};
-    try {
-      body = await parseJsonBody(req);
-    } catch {
-      return jsonResponse(res, 400, { error: "Invalid JSON body." });
-    }
-
-    const mode = String(body.mode || "").toLowerCase();
-    if (mode !== "clear-activities" && mode !== "delete-all") {
-      return jsonResponse(res, 400, { error: "Invalid reset mode." });
-    }
-
-    const emptyActivities = {
-      syncedAt: null,
-      lookbackMode: "days",
-      lookbackDays: 365,
-      runningThresholdHr: null,
-      hrZonesRunning: [],
-      activities: []
-    };
-    if (mode === "delete-all") {
-      await writeJson(SETTINGS_FILE, defaultSettings());
-    }
-    await writeJson(ACTIVITIES_FILE, emptyActivities);
-
-    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
-    const hasApiKey = typeof settings.apiKey === "string" && settings.apiKey.length > 0;
-    return jsonResponse(res, 200, {
-      ok: true,
-      mode,
-      hasApiKey
-    });
-  }
-
-  if (url.pathname === "/api/sync" && req.method === "POST") {
-    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
-    const apiKey = String(settings.apiKey || "").trim();
-
-    if (!apiKey) {
-      return jsonResponse(res, 400, { error: "Missing Intervals.icu API key. Save it in settings first." });
-    }
-
-    let body = {};
-    try {
-      body = await parseJsonBody(req);
-    } catch {
-      return jsonResponse(res, 400, { error: "Invalid JSON body." });
-    }
-
-    const requestedMode = String(body.mode || "").toLowerCase();
-    const syncMode =
-      requestedMode === "fetch-all" || requestedMode === "reload-all" || requestedMode === "all" || requestedMode === "range"
-        ? "fetch-all"
-        : "update";
-
-    try {
-      const currentData = await readJson(ACTIVITIES_FILE, {
-        syncedAt: null,
-        lookbackMode: "days",
-        lookbackDays: 365,
-        runningThresholdHr: null,
-        activities: []
-      });
-      const previousActivities = Array.isArray(currentData.activities) ? currentData.activities : [];
-      const previousById = new Map(previousActivities.map((activity) => [String(activity.id || ""), activity]));
-
-      const newestDate = formatDateUTC(new Date());
-      let activities = [];
-      let fetchedActivities = [];
-      let lookbackMode = currentData?.lookbackMode === "all" ? "all" : "days";
-      let lookbackDays = normalizeLookbackDaysValue(currentData?.lookbackDays, 365);
-      let syncOldestDate = "1970-01-01";
-      let syncNewestDate = newestDate;
-
-      if (syncMode === "update") {
-        syncOldestDate = deriveUpdateOldestDate(previousActivities, newestDate);
-        fetchedActivities = await fetchIntervalsActivitiesInRange(apiKey, syncOldestDate, syncNewestDate, previousById);
-        activities = mergeActivitiesById(previousActivities, fetchedActivities);
-      } else {
-        syncOldestDate = "1970-01-01";
-        fetchedActivities = await fetchIntervalsActivitiesInRange(apiKey, syncOldestDate, syncNewestDate, previousById);
-        activities = fetchedActivities;
-        lookbackMode = "all";
-        lookbackDays = null;
-      }
-
-      const splitStats = await enrichActivitiesWithPaceHrPoints(apiKey, activities);
-      let runningThresholdHr = safeNumber(currentData?.runningThresholdHr);
-      let hrZonesRunning = buildFiveZonesFromThresholdHr(runningThresholdHr);
-      try {
-        const { unsupported: athleteUnsupported, payload: athletePayload } = await fetchAthleteProfile(apiKey);
-        if (!athleteUnsupported) {
-          const fetchedThresholdHr = extractRunningThresholdHrBpm(athletePayload);
-          if (Number.isFinite(fetchedThresholdHr)) {
-            runningThresholdHr = fetchedThresholdHr;
-          }
-          const fetchedZones = buildFiveZonesFromThresholdHr(runningThresholdHr);
-          if (fetchedZones.length) {
-            hrZonesRunning = fetchedZones;
-            console.log(
-              `[endupro] athlete HR zones rebuilt from running LTHR ${runningThresholdHr}: ${fetchedZones
-                .map((zone) => `${zone.label}:${zone.minBpm}-${zone.maxBpm ?? "+"}`)
-                .join(", ")}`
-            );
-          } else {
-            console.error(
-              `[endupro] athlete profile fetched but running threshold HR was unavailable or invalid.` +
-                ` runningThresholdHr=${runningThresholdHr ?? "n/a"}`
-            );
-          }
-        } else {
-          console.error("[endupro] athlete profile endpoint unsupported (404). Running HR zones not updated.");
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[endupro] athlete profile fetch failed. Running HR zones not updated: ${message}`);
-        // Keep previous zones when athlete profile fetch fails.
-      }
-      const payload = {
-        syncedAt: new Date().toISOString(),
-        lookbackMode,
-        lookbackDays,
-        runningThresholdHr: Number.isFinite(runningThresholdHr) ? Number(runningThresholdHr.toFixed(1)) : null,
-        activities,
-        hrZonesRunning
-      };
-
-      await writeJson(ACTIVITIES_FILE, payload);
-
-      return jsonResponse(res, 200, {
-        ok: true,
-        syncMode,
-        syncOldestDate,
-        syncNewestDate,
-        syncedAt: payload.syncedAt,
-        count: activities.length,
-        fetchedCount: fetchedActivities.length,
-        splitPoints: splitStats.pointCount,
-        splitRunsRebuilt: splitStats.rebuiltRuns,
-        splitRunsCached: splitStats.cacheHits,
-        splitRunsFailed: splitStats.failedRuns,
-        splitUnsupported: splitStats.unsupported,
-        lookbackDays: lookbackMode === "all" ? "all" : lookbackDays
-      });
-    } catch (error) {
-      return jsonResponse(res, 502, { error: error.message || "Sync failed." });
-    }
-  }
-
-  if (url.pathname === "/api/series" && req.method === "GET") {
-    const data = await readJson(ACTIVITIES_FILE, {
-      syncedAt: null,
-      lookbackMode: "days",
-      lookbackDays: 365,
-      runningThresholdHr: null,
-      activities: []
-    });
-    const settings = normalizeSettings(await readJson(SETTINGS_FILE, defaultSettings()));
-    const activities = Array.isArray(data.activities) ? data.activities : [];
-    const zoneConfig = resolveRunningHrZoneConfiguration(data?.runningThresholdHr, settings);
-    const runningThresholdHr = zoneConfig.runningThresholdHr;
-    const hrZonesRunning = zoneConfig.hrZonesRunning;
-    const lookbackMode = data.lookbackMode === "all" || data.lookbackDays === "all" ? "all" : "days";
-    const requestedLookback = Number(data.lookbackDays ?? 365);
-    const lookbackDays =
-      lookbackMode === "all"
-        ? null
-        : Number.isFinite(requestedLookback)
-          ? Math.max(30, Math.min(Math.round(requestedLookback), 3650))
-          : 365;
-    const { series, latest } = computeRollingSeries(activities, lookbackDays);
-    const paceHrPoints = collectPaceHrPoints(activities);
-    const staleMetaCount = activities.reduce((count, activity) => {
-      const metaVersion = Number(activity?.metaSourceVersion);
-      return count + (Number.isFinite(metaVersion) && Math.round(metaVersion) === ACTIVITY_META_SOURCE_VERSION ? 0 : 1);
-    }, 0);
-    const hrZonesMissing = activities.length > 0 && !hrZonesRunning.length;
-    const resyncNeeded = staleMetaCount > 0 || hrZonesMissing;
-
-    return jsonResponse(res, 200, {
-      syncedAt: data.syncedAt || null,
-      activityCount: activities.length,
-      lookbackDays: lookbackMode === "all" ? "all" : lookbackDays,
-      activityMetaSourceVersion: ACTIVITY_META_SOURCE_VERSION,
-      staleActivityMetaCount: staleMetaCount,
-      hrZonesMissing,
-      resyncNeeded,
-      defaultRunningThresholdHr: zoneConfig.defaultRunningThresholdHr,
-      runningThresholdHrOverride: zoneConfig.runningThresholdHrOverride,
-      runningThresholdHr,
-      defaultHrZonesRunning: zoneConfig.defaultHrZonesRunning,
-      hrZonesRunningOverride: zoneConfig.hrZonesRunningOverride,
-      hrZonesRunning,
-      paceHrPoints,
-      runs: activities.map((activity) => ({
-        id: activity.id,
-        date: activity.date,
-        name: typeof activity.name === "string" && activity.name.trim().length ? activity.name.trim() : null,
-        startDateTime: typeof activity.startDateTime === "string" && activity.startDateTime ? activity.startDateTime : null,
-        type: activity.type,
-        distanceKm: Number(activity.distanceKm ?? 0),
-        movingTimeSec: Number.isFinite(Number(activity.movingTimeSec)) ? Number(activity.movingTimeSec) : null,
-        elevationGainM: Number.isFinite(Number(activity.elevationGainM)) ? Number(activity.elevationGainM) : null,
-        avgTempC: Number.isFinite(Number(activity.avgTempC)) ? Number(activity.avgTempC) : null,
-        avgHrBpm: Number.isFinite(Number(activity.avgHrBpm)) ? Number(activity.avgHrBpm) : null,
-        maxHrBpm: Number.isFinite(Number(activity.maxHrBpm)) ? Number(activity.maxHrBpm) : null,
-        load: Number.isFinite(Number(activity.load)) ? Number(activity.load) : null,
-        hrZoneDurationsSec: computeRunHrZoneDurations(activity, hrZonesRunning),
-        paceMinKm:
-          activity.paceSourceVersion === PACE_SOURCE_VERSION && Number.isFinite(Number(activity.paceMinKm))
-            ? Number(activity.paceMinKm)
-            : null
-      })),
-      series,
-      latest
-    });
-  }
-
-  const activityDetailMatch = url.pathname.match(/^\/api\/activity\/([^/]+)$/);
-  if (activityDetailMatch && req.method === "GET") {
-    let activityId = "";
-    try {
-      activityId = decodeURIComponent(activityDetailMatch[1] || "").trim();
-    } catch {
-      return jsonResponse(res, 400, { error: "Invalid activity id." });
-    }
-
-    if (!activityId) {
-      return jsonResponse(res, 400, { error: "Missing activity id." });
-    }
-
-    const data = await readJson(ACTIVITIES_FILE, { syncedAt: null, lookbackMode: "days", lookbackDays: 365, activities: [] });
-    const activities = Array.isArray(data.activities) ? data.activities : [];
-    const activityIndex = activities.findIndex((item) => String(item?.id || "") === activityId);
-    const activity = activityIndex >= 0 ? activities[activityIndex] : null;
-    if (!activity) {
-      return jsonResponse(res, 404, { error: "Activity not found." });
-    }
-
-    let detailStreamPoints =
-      activity.detailStreamSourceVersion === DETAIL_STREAM_SOURCE_VERSION && Array.isArray(activity.detailStreamPoints)
-        ? activity.detailStreamPoints
-        : [];
-    if (!detailStreamPoints.length || activity.detailStreamSourceVersion !== DETAIL_STREAM_SOURCE_VERSION) {
-      const settings = await readJson(SETTINGS_FILE, { apiKey: "" });
-      const apiKey = String(settings.apiKey || "").trim();
-      if (apiKey) {
-        try {
-          const { unsupported, payload } = await fetchActivityStreams(apiKey, activity.id);
-          if (unsupported) {
-            detailStreamPoints = [];
-            activity.detailStreamSourceVersion = DETAIL_STREAM_SOURCE_VERSION;
-            activity.detailStreamPoints = [];
-          } else {
-            detailStreamPoints = buildActivityDetailStreamPoints(activity, payload);
-            activity.detailStreamSourceVersion = DETAIL_STREAM_SOURCE_VERSION;
-            activity.detailStreamPoints = detailStreamPoints;
-          }
-          activities[activityIndex] = activity;
-          await writeJson(ACTIVITIES_FILE, data);
-        } catch {
-          detailStreamPoints = Array.isArray(activity.detailStreamPoints) ? activity.detailStreamPoints : [];
-        }
-      }
-    }
-
-    const lookbackMode = data.lookbackMode === "all" || data.lookbackDays === "all" ? "all" : "days";
-    const requestedLookback = Number(data.lookbackDays ?? 365);
-    const lookbackDays =
-      lookbackMode === "all"
-        ? null
-        : Number.isFinite(requestedLookback)
-          ? Math.max(30, Math.min(Math.round(requestedLookback), 3650))
-          : 365;
-    const { series } = computeRollingSeries(activities, lookbackDays);
-    const seriesByDate = new Map(series.map((item) => [String(item?.date || ""), item]));
-    const baselineItem = seriesByDate.get(String(activity?.date || ""));
-
-    const sum7 = baselineItem && Number.isFinite(Number(baselineItem.sum7)) ? Number(baselineItem.sum7) : null;
-    const sum7ma90 = baselineItem && Number.isFinite(Number(baselineItem.sum7ma90)) ? Number(baselineItem.sum7ma90) : null;
-    const capKm = Number.isFinite(sum7ma90) && sum7ma90 > 0 ? Number((sum7ma90 * 1.1).toFixed(3)) : null;
-    const headroomKm =
-      Number.isFinite(capKm) && Number.isFinite(sum7) ? Number((capKm - sum7).toFixed(3)) : null;
-    const deltaKm =
-      Number.isFinite(sum7) && Number.isFinite(sum7ma90) && sum7ma90 > 0 ? Number((sum7 - sum7ma90).toFixed(3)) : null;
-    const deltaPct =
-      Number.isFinite(deltaKm) && Number.isFinite(sum7ma90) && sum7ma90 > 0 ? Number((deltaKm / sum7ma90).toFixed(4)) : null;
-    const baselineStatus =
-      Number.isFinite(sum7) && Number.isFinite(sum7ma90) && sum7ma90 > 0
-        ? baselineStatusFromValues(sum7, sum7ma90)
-        : "n/a";
-
-    return jsonResponse(res, 200, {
-      summary: {
-        id: activity.id,
-        date: isDateKey(activity.date) ? activity.date : null,
-        name: typeof activity.name === "string" && activity.name.trim().length ? activity.name.trim() : null,
-        startDateTime: typeof activity.startDateTime === "string" && activity.startDateTime ? activity.startDateTime : null,
-        type: activity.type || null,
-        distanceKm: Number.isFinite(Number(activity.distanceKm)) ? Number(activity.distanceKm) : null,
-        movingTimeSec: Number.isFinite(Number(activity.movingTimeSec)) ? Number(activity.movingTimeSec) : null,
-        paceMinKm:
-          activity.paceSourceVersion === PACE_SOURCE_VERSION && Number.isFinite(Number(activity.paceMinKm))
-            ? Number(activity.paceMinKm)
-            : null,
-        avgHrBpm: Number.isFinite(Number(activity.avgHrBpm)) ? Number(activity.avgHrBpm) : null,
-        maxHrBpm: Number.isFinite(Number(activity.maxHrBpm)) ? Number(activity.maxHrBpm) : null,
-        elevationGainM: Number.isFinite(Number(activity.elevationGainM)) ? Number(activity.elevationGainM) : null,
-        avgTempC: Number.isFinite(Number(activity.avgTempC)) ? Number(activity.avgTempC) : null,
-        load: Number.isFinite(Number(activity.load)) ? Number(activity.load) : null
-      },
-      intervalPoints: Array.isArray(activity.intervalPoints) ? activity.intervalPoints : [],
-      splitKmPoints: Array.isArray(activity.splitKmPoints) ? activity.splitKmPoints : [],
-      detailStreamPoints: Array.isArray(detailStreamPoints) ? detailStreamPoints : [],
-      baselineContext: {
-        date: isDateKey(activity.date) ? activity.date : null,
-        sum7,
-        sum7ma90,
-        capKm,
-        headroomKm,
-        deltaKm,
-        deltaPct,
-        status: baselineStatus
-      }
-    });
-  }
-
-  return false;
-}
-
-async function serveStatic(req, res, url) {
-  const routePath = url.pathname === "/" ? "/index.html" : url.pathname;
-  const resolved = path.normalize(path.join(PUBLIC_DIR, routePath));
-
-  if (!resolved.startsWith(PUBLIC_DIR)) {
-    textResponse(res, 400, "Invalid path");
-    return true;
-  }
-
-  try {
-    const stat = await fs.stat(resolved);
-    if (!stat.isFile()) {
-      return false;
-    }
-
-    const ext = path.extname(resolved);
-    const mimeType = MIME_TYPES[ext] || "application/octet-stream";
-    const content = await fs.readFile(resolved);
-
-    res.writeHead(200, { "Content-Type": mimeType });
-    res.end(content);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function start() {
-  await ensureDataFiles();
-
-  const server = http.createServer(async (req, res) => {
-    try {
-      if (!req.url || !req.method) {
-        textResponse(res, 400, "Bad request");
-        return;
-      }
-
-      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-
-      if (url.pathname.startsWith("/api/")) {
-        const handled = await handleApi(req, res, url);
-        if (handled !== false) {
-          return;
-        }
-      }
-
-      const served = await serveStatic(req, res, url);
-      if (served) {
-        return;
-      }
-
-      textResponse(res, 404, "Not found");
-    } catch (error) {
-      textResponse(res, 500, `Server error: ${error.message || "unknown error"}`);
-    }
-  });
-
-  server.listen(PORT, HOST, () => {
-    console.log(`endupro running at http://${HOST}:${PORT}`);
-  });
-}
-
-start().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+export {
+  HR_ZONE_COUNT,
+  INCREMENTAL_ROLLING_BACKFILL_DAYS,
+  UPDATE_RECENT_RELOAD_DAYS,
+  addDaysUTC,
+  applyHrZoneOverrides,
+  baselineStatusFromValues,
+  blankHrZoneOverrideRows,
+  buildActivityDetailStreamPoints,
+  buildFiveZonesFromThresholdHr,
+  collectPaceHrPoints,
+  computeRollingSeries,
+  computeRunHrZoneDurations,
+  defaultSettings,
+  deriveIncrementalOldestDate,
+  deriveUpdateOldestDate,
+  enrichActivitiesWithPaceHrPoints,
+  extractRunningThresholdHrBpm,
+  fetchActivityStreams,
+  fetchActivityWithIntervals,
+  fetchAthleteProfile,
+  fetchIntervalsActivities,
+  fetchIntervalsActivitiesInRange,
+  formatDateUTC,
+  isDateKey,
+  latestActivityDateKey,
+  mergeActivitiesById,
+  normalizeActivities,
+  normalizeHrZoneOverrideRows,
+  normalizeLookbackDaysValue,
+  normalizeSettings,
+  normalizeThresholdOverride,
+  parseDateKey,
+  resolveRunningHrZoneConfiguration,
+  resolveStoredLookbackInfo,
+  shouldForceRefreshActivityOnUpdate,
+  safeNumber,
+};

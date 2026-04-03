@@ -1,6 +1,7 @@
 # endupro Current Functionality Spec
 
 ## App + Storage
+
 - Local single-user web app served by `server.js` (Node HTTP server), no external DB.
 - Persistent files in `data/`:
   - `data/settings.json` stores Intervals.icu API key plus local running LTHR / HR-zone overrides.
@@ -13,6 +14,7 @@
 - API routes are under `/api/*`.
 
 ## Intervals.icu Sync Model
+
 - Sync source: `GET /api/v1/athlete/0/activities?oldest=YYYY-MM-DD&newest=YYYY-MM-DD` (Basic auth `API_KEY:<key>`).
 - Run filtering: only run activities are kept.
 - Two sync modes are supported on `POST /api/sync`:
@@ -31,12 +33,14 @@
   - `runningThresholdHr` when Intervals.icu athlete profile exposes running threshold/LTHR
 
 ## Auto Update On Open
+
 - On boot, if API key exists and `syncedAt` is not today (local day), app auto-runs update mode.
 - Manual controls in connection card:
   - `Update` button: update mode (recent refresh from last-known day with minimum 30-day window)
   - `Fetch All` button: full-history load when empty, relabeled `Reload All` once data exists
 
 ## Activity Enrichment + Pace/HR Point Sources
+
 - Per-activity details fetch:
   - `GET /api/v1/activity/{id}?intervals=true`
   - used to refresh metadata (`name`, `startDateTime`, moving time, elevation, temp)
@@ -66,6 +70,7 @@
   - transient per-activity failures preserve prior cached state instead of zeroing data
 
 ## Backend Series Computation
+
 - Daily run distance is aggregated and backend computes:
   - `dayKm`
   - `sum7`, `sum14`, `sum28`, `sum30`, `sum90`, `sum180`
@@ -78,6 +83,7 @@
   - no-drop grace window
 
 ## Layout + Main UI
+
 - Two-column layout:
   - Left: Intervals connection + sync controls, recent activities list
   - Right: timeline card, running tolerance card, foundational stats, rolling sums chart, HR-vs-pace chart, pace-bin heatmap, help card
@@ -86,6 +92,7 @@
   - most recent activity name and date/time
 
 ## Timeline + Range Behavior
+
 - Timeline controls are in their own right-column card:
   - dual-handle range slider
   - presets: last 30/90/180 days, last year, all
@@ -95,6 +102,7 @@
 - Recent activity list is filtered to active timeline range.
 
 ## Recent Activities List
+
 - Shows activities in active timeline range (newest first).
 - Includes fzf-style fuzzy search input.
 - Multi-select behavior:
@@ -104,6 +112,7 @@
   - `Shift + Alt/Option`: add selected range to existing selection
 
 ## Rolling Sums Chart
+
 - Line chart with legend toggles.
 - Default visible lines:
   - `sum7`
@@ -119,6 +128,7 @@
 - Selected activities are highlighted in rolling chart using vertical markers on corresponding dates.
 
 ## Running Tolerance Card
+
 - Status derived from current endpoint in selected range:
   - `Below Baseline`, `Near Cap`, `Above Cap`, or `Insufficient Data`
 - Core values:
@@ -131,6 +141,7 @@
   - zones: green `<=1.5`, yellow `1.5-2.0`, red `>2.0`
 
 ## Heart Rate vs Pace Chart
+
 - Scatter plot over active timeline range using mixed point sources:
   - interval points, km-split points, run-level fallback
 - X-axis is reversed to match pace interpretation (right = faster).
@@ -153,6 +164,7 @@
   - orientation matches chart direction (reversed pace axis)
 
 ## Pace-Bin HR Heatmap
+
 - Weekly pace-bin matrix with average HR per bin cell.
 - Bin size selectable (`15s`, `30s`, `60s` per km).
 - Inline dual-handle color scale controls:
@@ -162,6 +174,7 @@
   - selected activities’ bins are outlined.
 
 ## Foundational Stats Box
+
 - Summarizes runs in selected timeline range.
 - Includes distributions and summaries for:
   - distance
@@ -171,6 +184,7 @@
   - weekday
 
 ## Activity Detail Drilldown
+
 - Clicking activity detail opens the detail pane with:
   - summary metrics
   - baseline context for that activity date
@@ -179,6 +193,7 @@
   - direct link: `Open on Intervals.icu`
 
 ## Frontend Persistence
+
 - Local storage persists:
   - visible rolling lines
   - extra line toggles (cap line)
@@ -191,6 +206,7 @@
   - selected activity is restored from URL on reload
 
 ## Dev Live Reload (Development)
+
 - `npm start` runs server in watch mode and enables dev reload endpoints.
 - Server exposes:
   - `GET /api/dev/reload-meta`

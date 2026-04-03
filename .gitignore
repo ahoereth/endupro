@@ -1,4 +1,12 @@
 node_modules/
+.svelte-kit/
+build/
+.vite/
+coverage/
+.env
+.env.*
+*.log
+.DS_Store
 data/settings.json
 data/activities.json
 plans
