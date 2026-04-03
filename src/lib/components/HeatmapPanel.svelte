@@ -19,10 +19,9 @@
     bins: [],
     cells: [],
   };
-  export let binSeconds = 30;
+  export let binSeconds = 15;
   export let colorRangeMin: number | null = null;
   export let colorRangeMax: number | null = null;
-  export let orientation: "pace-x" | "pace-y" = "pace-x";
 
   const dispatch = createEventDispatcher();
   let activeColorThumb: "min" | "max" = "max";
@@ -122,11 +121,17 @@
     .filter((value) => Number.isFinite(value)) as number[];
   $: minHr = values.length ? Math.min(...values) : null;
   $: maxHr = values.length ? Math.max(...values) : null;
-  $: resolvedColorRange = resolveNumericRange(
-    { min: colorRangeMin, max: colorRangeMax },
-    { min: minHr, max: maxHr },
-    HEATMAP_COLOR_MIN_SPAN,
-  );
+  $: resolvedColorRange =
+    colorRangeMin === null &&
+    colorRangeMax === null &&
+    minHr !== null &&
+    maxHr !== null
+      ? { min: minHr, max: maxHr }
+      : resolveNumericRange(
+          { min: colorRangeMin, max: colorRangeMax },
+          { min: minHr, max: maxHr },
+          HEATMAP_COLOR_MIN_SPAN,
+        );
   $: colorMinStep =
     Number.isFinite(resolvedColorRange.min) &&
     Number.isFinite(minHr) &&
@@ -158,6 +163,7 @@
       Number(resolvedColorRange.max),
     ),
   );
+
   $: heatmapPalette =
     resolvedColorRange.min !== null && resolvedColorRange.max !== null
       ? Array.from({ length: 8 }, (_, index) => {
@@ -183,13 +189,8 @@
           (params?.data?.value as
             | [number, number, number | null]
             | undefined) ?? [];
-        const paceOnX = orientation === "pace-x";
-        const weekKey = paceOnX
-          ? (model.weekKeys[Number(yIndex)] ?? null)
-          : (model.weekKeys[Number(xIndex)] ?? null);
-        const bin = paceOnX
-          ? model.bins[Number(xIndex)]
-          : model.bins[Number(yIndex)];
+        const weekKey = model.weekKeys[Number(xIndex)] ?? null;
+        const bin = model.bins[Number(yIndex)];
         return [
           `<strong>${formatDateLabel(weekKey)}</strong>`,
           formatCalendarWeek(weekKey),
@@ -200,49 +201,29 @@
     },
     xAxis: {
       type: "category",
-      inverse: orientation === "pace-x",
-      name: orientation === "pace-x" ? "Pace (min/km)" : "Week",
+      inverse: false,
+      name: "Week",
       nameLocation: "middle",
       nameGap: 62,
-      data:
-        orientation === "pace-x"
-          ? model.bins.map((bin) =>
-              formatPace((bin * binSeconds) / 60).replace(" /km", ""),
-            )
-          : model.weekKeys,
+      data: model.weekKeys,
       splitArea: { show: true },
-      axisLabel:
-        orientation === "pace-x"
-          ? { rotate: 35 }
-          : {
-              rotate: 35,
-              interval: (index: number) => isWeekMonthBoundary(index),
-              formatter: (value: string) => formatMonthTick(value),
-            },
+      axisLabel: {
+        rotate: 35,
+        interval: (index: number) => isWeekMonthBoundary(index),
+        formatter: (value: string) => formatMonthTick(value),
+      },
     },
     yAxis: {
       type: "category",
-      inverse: orientation === "pace-y",
-      name: orientation === "pace-x" ? "Week" : "Pace (min/km)",
+      inverse: true,
+      name: "Pace (min/km)",
       nameLocation: "middle",
       nameGap: 72,
-      data:
-        orientation === "pace-x"
-          ? model.weekKeys
-          : model.bins.map((bin) =>
-              formatPace((bin * binSeconds) / 60).replace(" /km", ""),
-            ),
+      data: model.bins.map((bin) =>
+        formatPace((bin * binSeconds) / 60).replace(" /km", ""),
+      ),
       splitArea: { show: true },
-      axisLabel:
-        orientation === "pace-x"
-          ? {
-              interval: (index: number) => isWeekMonthBoundary(index),
-              formatter: (value: string) => formatMonthTick(value),
-            }
-          : {
-              show: true,
-              formatter: (value: string) => value,
-            },
+      axisLabel: { show: true, formatter: (value: string) => value },
     },
     visualMap: {
       show: false,
@@ -270,12 +251,8 @@
         },
         data: model.cells.map((cell) => ({
           value: [
-            orientation === "pace-x"
-              ? model.bins.findIndex((bin) => bin === cell.bin)
-              : model.weekKeys.findIndex((weekKey) => weekKey === cell.weekKey),
-            orientation === "pace-x"
-              ? model.weekKeys.findIndex((weekKey) => weekKey === cell.weekKey)
-              : model.bins.findIndex((bin) => bin === cell.bin),
+            model.weekKeys.findIndex((weekKey) => weekKey === cell.weekKey),
+            model.bins.findIndex((bin) => bin === cell.bin),
             cell.avgHrBpm,
           ],
           itemStyle: {
@@ -346,36 +323,11 @@
       {model.weekKeys.length ? `${model.weekKeys.length} weeks` : "No data"}
     </p>
   </div>
-  <div class="row compact heatmap-controls">
-    <label for="heatmap-bin-size" class="mini-label">Pace Bin</label>
-    <select
-      id="heatmap-bin-size"
-      value={String(binSeconds)}
-      on:change={(event) =>
-        dispatch("changebinsize", {
-          value: Number((event.currentTarget as HTMLSelectElement).value),
-        })}
-    >
-      <option value="15">15 sec/km</option>
-      <option value="30">30 sec/km</option>
-      <option value="60">60 sec/km</option>
-    </select>
-    <button
-      type="button"
-      class="secondary-button"
-      on:click={() =>
-        dispatch("changeorientation", {
-          value: orientation === "pace-x" ? "pace-y" : "pace-x",
-        })}
-    >
-      {orientation === "pace-x" ? "Show Pace On Y" : "Show Pace On X"}
-    </button>
-  </div>
-
   {#if resolvedColorRange.min !== null && resolvedColorRange.max !== null}
-    <div class="color-scale-legend">
-      <div class="color-scale-title">HR color saturation</div>
+    <div class="scrub-row">
+      <label for="hr-color-saturation">HR color saturation</label>
       <DualHandleSlider
+        startId="hr-color-saturation"
         min={0}
         max={HEATMAP_COLOR_SLIDER_STEPS}
         step={1}

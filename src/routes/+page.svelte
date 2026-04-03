@@ -32,6 +32,7 @@
   } from "$lib/runtime/activity-detail";
   import {
     loadUiPreferences,
+    clearLocalUiStorage,
     persistComparableSettings,
     persistHeatmapPreferences,
     persistNumericRange,
@@ -104,10 +105,15 @@
   let comparableStrictness = initialPreferences.comparableStrictness;
   let paceAxisRange = initialPreferences.paceAxisRange;
   let paceHrColorRange = initialPreferences.paceHrColorRange;
+  let paceHrColorRangeCustomized =
+    initialPreferences.paceHrColorRange.min !== null ||
+    initialPreferences.paceHrColorRange.max !== null;
   let heatmapBinSize = initialPreferences.heatmapBinSize;
   let heatmapColorRange = initialPreferences.heatmapColorRange;
-  let heatmapOrientation: HeatmapOrientation =
-    initialPreferences.heatmapOrientation;
+  let heatmapColorRangeCustomized =
+    initialPreferences.heatmapColorRange.min !== null ||
+    initialPreferences.heatmapColorRange.max !== null;
+  let heatmapOrientation: HeatmapOrientation = "pace-y";
   let mobileMenuOpen = false;
   let urlStateReady = false;
   let urlStateSnapshot = "";
@@ -153,8 +159,14 @@
     comparableStrictness = resetPreferences.comparableStrictness;
     paceAxisRange = resetPreferences.paceAxisRange;
     paceHrColorRange = resetPreferences.paceHrColorRange;
+    paceHrColorRangeCustomized =
+      resetPreferences.paceHrColorRange.min !== null ||
+      resetPreferences.paceHrColorRange.max !== null;
     heatmapBinSize = resetPreferences.heatmapBinSize;
     heatmapColorRange = resetPreferences.heatmapColorRange;
+    heatmapColorRangeCustomized =
+      resetPreferences.heatmapColorRange.min !== null ||
+      resetPreferences.heatmapColorRange.max !== null;
     heatmapOrientation = resetPreferences.heatmapOrientation;
     mobileMenuOpen = false;
     syncPaused = false;
@@ -171,6 +183,10 @@
   $: clampedRange = clampRange(series, startIndex, endIndex);
   $: rangeStartIndex = clampedRange.startIndex;
   $: rangeEndIndex = clampedRange.endIndex;
+  $: isFullTimelineRange =
+    series.length > 0 &&
+    rangeStartIndex === 0 &&
+    rangeEndIndex === series.length - 1;
   $: visibleSeries =
     rangeStartIndex !== null && rangeEndIndex !== null && series.length
       ? series.slice(rangeStartIndex, rangeEndIndex + 1)
@@ -187,23 +203,24 @@
       Date.parse(a.startDateTime || a.date),
   );
   $: recentRuns = filterRunsBySearch(sortedRunsInRange, searchQuery);
-  $: pointsInRange = ((payload?.paceHrPoints ?? []) as PaceHrPoint[]).filter(
-    (point) => {
-      const date = String(point?.date || "");
-      return (
-        (!rangeDates.startDate || date >= rangeDates.startDate) &&
-        (!rangeDates.endDate || date <= rangeDates.endDate)
-      );
-    },
-  );
+  $: pointsInRange = isFullTimelineRange
+    ? ((payload?.paceHrPoints ?? []) as PaceHrPoint[])
+    : ((payload?.paceHrPoints ?? []) as PaceHrPoint[]).filter((point) => {
+        const date = String(point?.date || "");
+        return (
+          (!rangeDates.startDate || date >= rangeDates.startDate) &&
+          (!rangeDates.endDate || date <= rangeDates.endDate)
+        );
+      });
   $: comparableContext = buildComparableContext(
     runsInRange,
     selectedIds,
     comparableStrictness,
   );
-  $: comparableSummary = comparableContext.reference
-    ? `Reference: ${comparableContext.reference.name || "Latest run"} · ${comparableContext.comparableIds.size} comparable runs`
-    : "No reference run in range.";
+  $: comparableSummary =
+    selectedIds.length && comparableContext.reference
+      ? `Reference: ${comparableContext.reference.name || "Latest run"} · ${comparableContext.comparableIds.size} comparable runs`
+      : "";
   $: hasSelectedActivities = selectedIds.length > 0;
   $: selectedOnlyPoints = hasSelectedActivities
     ? pointsInRange.filter((point) =>
@@ -230,16 +247,19 @@
     0.05,
   );
   $: heatmapPoints =
-    resolvedPaceFilterRange.min !== null && resolvedPaceFilterRange.max !== null
-      ? visiblePaceHrPoints.filter((point) => {
-          const pace = Number(point?.paceMinKm);
-          return (
-            Number.isFinite(pace) &&
-            pace >= Number(resolvedPaceFilterRange.min) &&
-            pace <= Number(resolvedPaceFilterRange.max)
-          );
-        })
-      : visiblePaceHrPoints;
+    paceAxisRange.min === null && paceAxisRange.max === null
+      ? visiblePaceHrPoints
+      : resolvedPaceFilterRange.min !== null &&
+          resolvedPaceFilterRange.max !== null
+        ? visiblePaceHrPoints.filter((point) => {
+            const pace = Number(point?.paceMinKm);
+            return (
+              Number.isFinite(pace) &&
+              pace >= Number(resolvedPaceFilterRange.min) &&
+              pace <= Number(resolvedPaceFilterRange.max)
+            );
+          })
+        : visiblePaceHrPoints;
   $: selectedDateKeys = runs
     .filter((run) => selectedIds.includes(String(run.id)))
     .map((run) => String(run.date));
@@ -420,12 +440,6 @@
 
   async function runReset(scope: "clear-activities" | "delete-all") {
     if (!workerClient) return;
-    console.log("runReset:start", {
-      scope,
-      hasApiKey: summarySettings.hasApiKey,
-      apiKeyLength: String(runtimeSettings.apiKey || "").length,
-      status,
-    });
     syncBusy = true;
     syncProgressPercent = null;
     try {
@@ -435,6 +449,7 @@
       if (scope === "delete-all") {
         runtimeSettings = clearRuntimeSettings();
       } else {
+        clearLocalUiStorage();
         runtimeSettings = saveRuntimeSettings({
           apiKey: savedApiKey,
           runningThresholdHrOverride: null,
@@ -444,12 +459,6 @@
       summarySettings = buildSettingsSummary(runtimeSettings);
       await workerClient.setRuntimeSettings(runtimeSettings);
       await refresh();
-      console.log("runReset:after-refresh", {
-        scope,
-        hasApiKey: summarySettings.hasApiKey,
-        apiKeyLength: String(runtimeSettings.apiKey || "").length,
-        status,
-      });
       if (urlStateReady) {
         syncUrlState(true);
       }
@@ -457,17 +466,7 @@
         scope === "delete-all"
           ? "All local data deleted, including API key."
           : "Local activity data cleared. API key kept.";
-      console.log("runReset:done", {
-        scope,
-        hasApiKey: summarySettings.hasApiKey,
-        apiKeyLength: String(runtimeSettings.apiKey || "").length,
-        status,
-      });
     } catch (error) {
-      console.log("runReset:error", {
-        scope,
-        error,
-      });
       status =
         error instanceof Error ? error.message : "Could not reset local data.";
     } finally {
@@ -625,13 +624,23 @@
   }
   $: persistHeatmapPreferences(heatmapBinSize, heatmapOrientation);
   $: persistNumericRange("paceAxisRange", paceAxisRange);
-  $: persistNumericRange("paceHrColorRange", paceHrColorRange);
-  $: persistNumericRange("heatmapColorRange", heatmapColorRange);
   $: persistComparableSettings({
     selectedOnlyEnabled,
     comparableEnabled,
     comparableStrictness,
   });
+
+  function handlePaceHrColorRangeChange(event: CustomEvent) {
+    paceHrColorRange = event.detail;
+    paceHrColorRangeCustomized = true;
+    persistNumericRange("paceHrColorRange", paceHrColorRange);
+  }
+
+  function handleHeatmapColorRangeChange(event: CustomEvent) {
+    heatmapColorRange = event.detail;
+    heatmapColorRangeCustomized = true;
+    persistNumericRange("heatmapColorRange", heatmapColorRange);
+  }
 </script>
 
 <svelte:head>
@@ -692,17 +701,11 @@
         }
       }}
       onDeleteAll={() => {
-        console.log("delete-all:clicked", {
-          hasApiKey: summarySettings.hasApiKey,
-          apiKeyLength: String(runtimeSettings.apiKey || "").length,
-          status,
-        });
         if (
           window.confirm(
             "Delete all data, including your saved API key? This cannot be undone.",
           )
         ) {
-          console.log("delete-all:confirmed");
           void runReset("delete-all");
         }
       }}
@@ -786,8 +789,8 @@
         {selectedIds}
         paceRangeMin={paceAxisRange.min}
         paceRangeMax={paceAxisRange.max}
-        colorRangeMin={paceHrColorRange.min}
-        colorRangeMax={paceHrColorRange.max}
+        colorRangeMin={paceHrColorRangeCustomized ? paceHrColorRange.min : null}
+        colorRangeMax={paceHrColorRangeCustomized ? paceHrColorRange.max : null}
         on:toggleselectedonly={(event) => {
           selectedOnlyEnabled = event.detail.value;
           if (selectedOnlyEnabled) {
@@ -809,21 +812,24 @@
           comparableEnabled = false;
         }}
         on:changepacerange={(event) => (paceAxisRange = event.detail)}
-        on:changecolorrange={(event) => (paceHrColorRange = event.detail)}
+        on:changecolorrange={handlePaceHrColorRangeChange}
         on:openactivity={(event) =>
           handlePaceHrActivityClick(event.detail.activityId)}
       />
-      <HeatmapPanel
-        model={heatmap}
-        binSeconds={heatmapBinSize}
-        colorRangeMin={heatmapColorRange.min}
-        colorRangeMax={heatmapColorRange.max}
-        orientation={heatmapOrientation}
-        on:changebinsize={(event) => (heatmapBinSize = event.detail.value)}
-        on:changecolorrange={(event) => (heatmapColorRange = event.detail)}
-        on:changeorientation={(event) =>
-          (heatmapOrientation = event.detail.value)}
-      />
+      {#key `${heatmapBinSize}-${heatmap.weekKeys.length}-${heatmap.bins.length}-${heatmap.cells.length}-${heatmapPoints.length}`}
+        <HeatmapPanel
+          model={heatmap}
+          binSeconds={heatmapBinSize}
+          colorRangeMin={heatmapColorRangeCustomized
+            ? heatmapColorRange.min
+            : null}
+          colorRangeMax={heatmapColorRangeCustomized
+            ? heatmapColorRange.max
+            : null}
+          on:changebinsize={(event) => (heatmapBinSize = event.detail.value)}
+          on:changecolorrange={handleHeatmapColorRangeChange}
+        />
+      {/key}
       <HelpCard />
       <HrZoneSettingsPanel
         defaultThreshold={payload?.defaultRunningThresholdHr ?? null}

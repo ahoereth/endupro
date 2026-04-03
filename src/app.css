@@ -27,6 +27,11 @@ body {
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   background: radial-gradient(circle at top left, #ffffff 0%, var(--bg) 65%);
   color: var(--text);
+  overflow-x: clip;
+}
+
+html {
+  overflow-x: clip;
 }
 
 body.has-mobile-panel-open {
@@ -2130,8 +2135,8 @@ svg {
   .activity-drawer {
     position: relative;
     width: min(92vw, 460px);
-    height: calc(100vh - 24px);
-    max-height: calc(100vh - 24px);
+    height: 100dvh;
+    max-height: 100dvh;
     min-height: 0;
     border-radius: 12px;
     transform: none;

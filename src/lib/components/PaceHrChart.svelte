@@ -97,7 +97,7 @@
   $: usableAll = points.filter((point) => {
     const pace = Number(point?.paceMinKm);
     const hr = Number(point?.avgHrBpm);
-    return Number.isFinite(pace) && Number.isFinite(hr) && hr > 0;
+    return Number.isFinite(pace) && pace > 0 && Number.isFinite(hr) && hr > 0;
   });
   $: paceBounds = computeFiniteBounds(
     usableAll.map((point) => Number(point.paceMinKm)),
@@ -105,11 +105,17 @@
   );
   $: paceBoundMin = paceBounds.min;
   $: paceBoundMax = paceBounds.max;
-  $: resolvedPaceRange = resolveNumericRange(
-    { min: paceRangeMin, max: paceRangeMax },
-    paceBounds,
-    PACE_RANGE_MIN_SPAN,
-  );
+  $: resolvedPaceRange =
+    paceRangeMin === null &&
+    paceRangeMax === null &&
+    paceBoundMin !== null &&
+    paceBoundMax !== null
+      ? { min: paceBoundMin, max: paceBoundMax }
+      : resolveNumericRange(
+          { min: paceRangeMin, max: paceRangeMax },
+          paceBounds,
+          PACE_RANGE_MIN_SPAN,
+        );
   $: usable = usableAll.filter((point) => {
     const pace = Number(point.paceMinKm);
     return (
@@ -132,15 +138,22 @@
   $: colorBoundMax = finiteTimestamps.length
     ? Math.max(...finiteTimestamps)
     : null;
-  $: resolvedColorRange = resolveNumericRange(
-    { min: colorRangeMin, max: colorRangeMax },
-    { min: colorBoundMin, max: colorBoundMax },
-    Math.max(
-      60 * 1000,
-      ((Number(colorBoundMax) || 0) - (Number(colorBoundMin) || 0)) /
-        COLOR_RANGE_SLIDER_STEPS,
-    ),
-  );
+  $: resolvedColorRange =
+    colorRangeMin === null &&
+    colorRangeMax === null &&
+    colorBoundMin !== null &&
+    colorBoundMax !== null
+      ? { min: colorBoundMin, max: colorBoundMax }
+      : resolveNumericRange(
+          { min: colorRangeMin, max: colorRangeMax },
+          { min: colorBoundMin, max: colorBoundMax },
+          Math.max(
+            60 * 1000,
+            ((Number(colorBoundMax) || 0) - (Number(colorBoundMin) || 0)) /
+              COLOR_RANGE_SLIDER_STEPS,
+          ),
+        );
+
   $: slowPaceStep =
     Number.isFinite(resolvedPaceRange.max) &&
     Number.isFinite(paceBoundMin) &&
@@ -443,11 +456,16 @@
         {usable.length === usableAll.length
           ? `${usable.length} points`
           : `${usable.length}/${usableAll.length} points in current pace window`}
+        · Corr {correlation !== null ? correlation.toFixed(2) : "n/a"}
       {:else}
         No points in range
       {/if}
     </p>
   </div>
+  <p class="chart-subsummary">
+    Same pace (x), lower HR (y) is better. Darker blue means earlier/lower date
+    at the same x-position.
+  </p>
 
   <div class="row compact comparable-controls">
     {#if selectedIds.length}
@@ -528,9 +546,10 @@
       </div>
 
       {#if resolvedColorRange.min !== null && resolvedColorRange.max !== null}
-        <div class="color-scale-legend">
-          <div class="color-scale-title">Date color saturation</div>
+        <div class="scrub-row">
+          <label for="date-color-saturation">Date color saturation</label>
           <DualHandleSlider
+            startId="date-color-saturation"
             min={0}
             max={COLOR_RANGE_SLIDER_STEPS}
             step={1}
@@ -568,10 +587,6 @@
       height="360px"
       on:chartclick={handleChartClick}
     />
-    <p class="chart-subsummary">
-      Correlation: {correlation !== null ? correlation.toFixed(2) : "n/a"} · faster
-      is to the right; same-pace lower HR is improvement.
-    </p>
   {:else if usableAll.length > 1}
     <div class="chart-empty">
       No points in current pace range. Widen the Pace range slider.

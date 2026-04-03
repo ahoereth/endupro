@@ -727,7 +727,9 @@ export function buildHeatmap(
     .filter(
       (point) =>
         Number.isFinite(Number(point?.paceMinKm)) &&
+        Number(point.paceMinKm) > 0 &&
         Number.isFinite(Number(point?.avgHrBpm)) &&
+        Number(point.avgHrBpm) > 0 &&
         point?.date,
     )
     .map((point) => ({
