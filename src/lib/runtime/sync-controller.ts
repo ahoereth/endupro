@@ -1,10 +1,10 @@
 import * as Comlink from "comlink";
 import {
   buildProgressPercent,
-  buildProgressStatus,
   mergeRefreshOptions,
   type RefreshOptions,
 } from "$lib/runtime/sync";
+import { buildProgressStatus } from "$lib/runtime/sync-status";
 import type { WorkerClient } from "$lib/runtime/worker-client";
 import type { SyncResult, WorkerSyncProgressEvent } from "$lib/types/app";
 

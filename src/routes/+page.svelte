@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import ActivityDetailDrawer from "$lib/components/ActivityDetailDrawer.svelte";
   import ConnectionPanel from "$lib/components/ConnectionPanel.svelte";
+  import ConnectionSection from "$lib/components/ConnectionSection.svelte";
   import FoundationsPanel from "$lib/components/FoundationsPanel.svelte";
   import HeatmapPanel from "$lib/components/HeatmapPanel.svelte";
   import HelpCard from "$lib/components/HelpCard.svelte";
@@ -125,6 +126,14 @@
     if (patch.syncProgressPercent !== undefined)
       syncProgressPercent = patch.syncProgressPercent;
     if (patch.syncPaused !== undefined) syncPaused = patch.syncPaused;
+  }
+
+  function isSyncErrorStatus(value: string) {
+    return (
+      value.startsWith("Intervals.icu API ") ||
+      value === "Sync failed." ||
+      value === "Could not stop the current sync."
+    );
   }
 
   function resetUiState() {
@@ -618,43 +627,6 @@
     </div>
   </header>
 
-  {#if !summarySettings.hasApiKey}
-    <div class="mobile-connection-panel">
-      <ConnectionPanel
-        {status}
-        hasApiKey={summarySettings.hasApiKey}
-        syncedAt={payload?.syncedAt ?? null}
-        {oldestRun}
-        {latestRun}
-        {syncBusy}
-        {syncStopping}
-        {syncProgressPercent}
-        activityCount={payload?.activityCount ?? 0}
-        on:savekey={(event) => saveApiKey(event.detail.apiKey)}
-        on:update={() => syncController.runIncremental(false)}
-        on:stopsync={syncController.requestStopSync}
-        on:clearactivities={() => {
-          if (
-            window.confirm(
-              "Delete all activities and synced charts? Your saved API key will be kept.",
-            )
-          ) {
-            void runReset("clear-activities");
-          }
-        }}
-        on:deleteall={() => {
-          if (
-            window.confirm(
-              "Delete all data, including your saved API key? This cannot be undone.",
-            )
-          ) {
-            void runReset("delete-all");
-          }
-        }}
-      />
-    </div>
-  {/if}
-
   <button
     type="button"
     class="mobile-panel-backdrop"
@@ -664,53 +636,40 @@
   ></button>
 
   <div class="app-grid" class:is-detail-open={Boolean(detail)}>
-    <aside
-      class="left-column"
-      class:is-mobile-open={mobileMenuOpen}
-      aria-label="Controls and recent activities"
+    <ConnectionSection
+      {status}
+      hasApiKey={summarySettings.hasApiKey}
+      syncedAt={payload?.syncedAt ?? null}
+      {oldestRun}
+      {latestRun}
+      {syncBusy}
+      {syncStopping}
+      {syncProgressPercent}
+      activityCount={payload?.activityCount ?? 0}
+      {mobileMenuOpen}
+      onCloseMenu={() => (mobileMenuOpen = false)}
+      onSaveKey={saveApiKey}
+      onUpdate={() => syncController.runIncremental(false)}
+      onStopSync={syncController.requestStopSync}
+      onClearActivities={() => {
+        if (
+          window.confirm(
+            "Delete all activities and synced charts? Your saved API key will be kept.",
+          )
+        ) {
+          void runReset("clear-activities");
+        }
+      }}
+      onDeleteAll={() => {
+        if (
+          window.confirm(
+            "Delete all data, including your saved API key? This cannot be undone.",
+          )
+        ) {
+          void runReset("delete-all");
+        }
+      }}
     >
-      <div class="mobile-left-drawer-header">
-        <h2>Menu</h2>
-        <button
-          type="button"
-          class="secondary-button"
-          on:click={() => (mobileMenuOpen = false)}>Close</button
-        >
-      </div>
-
-      <ConnectionPanel
-        {status}
-        hasApiKey={summarySettings.hasApiKey}
-        syncedAt={payload?.syncedAt ?? null}
-        {oldestRun}
-        {latestRun}
-        {syncBusy}
-        {syncStopping}
-        {syncProgressPercent}
-        activityCount={payload?.activityCount ?? 0}
-        on:savekey={(event) => saveApiKey(event.detail.apiKey)}
-        on:update={() => syncController.runIncremental(false)}
-        on:stopsync={syncController.requestStopSync}
-        on:clearactivities={() => {
-          if (
-            window.confirm(
-              "Delete all activities and synced charts? Your saved API key will be kept.",
-            )
-          ) {
-            void runReset("clear-activities");
-          }
-        }}
-        on:deleteall={() => {
-          if (
-            window.confirm(
-              "Delete all data, including your saved API key? This cannot be undone.",
-            )
-          ) {
-            void runReset("delete-all");
-          }
-        }}
-      />
-
       <RecentActivitiesPanel
         runs={recentRuns}
         {searchQuery}
@@ -726,9 +685,50 @@
             ),
           })}
       />
-    </aside>
+    </ConnectionSection>
 
     <section class="right-column">
+      {#if !syncBusy && isSyncErrorStatus(status)}
+        <section
+          class="card mobile-sync-progress-card mobile-sync-connection-card"
+        >
+          <h2>Connection Issue</h2>
+          <ConnectionPanel
+            {status}
+            hasApiKey={summarySettings.hasApiKey}
+            syncedAt={payload?.syncedAt ?? null}
+            {oldestRun}
+            {latestRun}
+            {syncBusy}
+            {syncStopping}
+            {syncProgressPercent}
+            activityCount={payload?.activityCount ?? 0}
+          />
+        </section>
+      {/if}
+
+      {#if syncBusy && syncProgressPercent !== null}
+        <section class="card mobile-sync-progress-card">
+          <h2>Sync Progress</h2>
+          <div
+            class="sync-progress"
+            aria-label="Sync progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={syncProgressPercent}
+            role="progressbar"
+          >
+            <div class="sync-progress-track">
+              <div
+                class="sync-progress-fill"
+                style={`width: ${syncProgressPercent}%`}
+              ></div>
+            </div>
+            <span class="sync-progress-value">{syncProgressPercent}%</span>
+          </div>
+        </section>
+      {/if}
+
       <TimelinePanel
         {series}
         startIndex={rangeStartIndex}

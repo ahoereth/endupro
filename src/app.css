@@ -648,6 +648,21 @@ button:disabled {
   color: var(--muted);
 }
 
+.status-box {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--muted);
+}
+
+.status-box--error {
+  border-color: #e5a3a3;
+  background: #fff4f4;
+  color: #8f1f1f;
+}
+
 .sync-progress {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -678,6 +693,10 @@ button:disabled {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: right;
+}
+
+.mobile-sync-progress-card {
+  display: none;
 }
 
 .chart-header {
@@ -1999,6 +2018,17 @@ svg {
   .mobile-connection-panel {
     display: block;
     margin-bottom: 16px;
+  }
+
+  .mobile-sync-progress-card {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .mobile-sync-progress-card h2 {
+    margin: 0;
+    font-size: 1rem;
   }
 
   .left-column {

@@ -16,6 +16,20 @@
   const dispatch = createEventDispatcher();
   let apiKey = "";
   $: canSaveApiKey = apiKey.trim().length > 0;
+  $: isStatusError =
+    typeof status === "string" &&
+    (status.startsWith("Intervals.icu API ") ||
+      status === "Sync failed." ||
+      status === "Could not stop the current sync.");
+
+  $: statusHint =
+    isStatusError && status.startsWith("Intervals.icu API ")
+      ? "Please double-check your Intervals.icu API key and try again."
+      : isStatusError && status === "Sync failed."
+        ? "Please try again and make sure your API key is still valid."
+        : isStatusError && status === "Could not stop the current sync."
+          ? "The current sync is still running in the background."
+          : null;
 
   function submitApiKey() {
     if (!canSaveApiKey) {
@@ -93,7 +107,12 @@
     <span class="summary-value">{activityCount}</span>
   </div>
 
-  <p class="status">{status}</p>
+  <div class={`status-box ${isStatusError ? "status-box--error" : ""}`}>
+    {#if statusHint}
+      <div>{statusHint}</div>
+    {/if}
+    {status}
+  </div>
 
   {#if syncBusy && syncProgressPercent !== null}
     <div
