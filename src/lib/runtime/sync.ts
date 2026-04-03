@@ -23,31 +23,8 @@ export function mergeRefreshOptions(
 
 export function buildProgressStatus(
   actionLabel: string,
-  event: WorkerSyncProgressEvent,
+  _event: WorkerSyncProgressEvent,
 ) {
-  if (event.phase === "list") {
-    return `${actionLabel}... loaded ${event.count ?? 0} run summaries. Enriching newest activities first.`;
-  }
-  if (event.phase === "profile") {
-    return `${actionLabel}... updating athlete profile and HR zones.`;
-  }
-  if (event.phase === "activity") {
-    const completed = Number(event.completedActivities ?? 0);
-    const total = Number(event.totalActivities ?? 0);
-    if (event.requestStage === "detail") {
-      return `${actionLabel}... activity details updated. ${completed}/${total} activities completed.`;
-    }
-    if (event.requestStage === "streams") {
-      return `${actionLabel}... stream enrichment updated. ${completed}/${total} activities completed.`;
-    }
-    if (event.requestStage === "cached") {
-      return `${actionLabel}... reused cached enrichment. ${completed}/${total} activities completed.`;
-    }
-    return `${actionLabel}... processed ${completed}/${total} activities.`;
-  }
-  if (event.phase === "complete") {
-    return `${actionLabel}... finalizing sync results.`;
-  }
   return `${actionLabel}...`;
 }
 

@@ -304,7 +304,7 @@
     urlStateReady = true;
     syncUrlState();
     if (syncPaused) {
-      status = "Sync paused. Resume manually with Update or Hard Reload Data.";
+      status = "Sync paused. Resume manually with Update.";
       return;
     }
     if (
@@ -349,7 +349,11 @@
 
   async function saveApiKey(apiKey: string) {
     const trimmed = String(apiKey || "").trim();
-    if (!trimmed && summarySettings.hasApiKey) {
+    const previousApiKey = runtimeSettings.apiKey;
+    const hasExistingKey = summarySettings.hasApiKey;
+    const isNewKey = trimmed.length > 0 && trimmed !== previousApiKey;
+
+    if (!trimmed && hasExistingKey) {
       status = "API key unchanged.";
       return;
     }
@@ -362,6 +366,11 @@
     await workerClient?.setRuntimeSettings(runtimeSettings);
     status = "API key saved.";
     await refresh();
+
+    if (isNewKey) {
+      await runReset("clear-activities");
+      await syncController.runFetchAll();
+    }
   }
 
   async function saveOverrides(event: CustomEvent) {
@@ -609,6 +618,43 @@
     </div>
   </header>
 
+  {#if !summarySettings.hasApiKey}
+    <div class="mobile-connection-panel">
+      <ConnectionPanel
+        {status}
+        hasApiKey={summarySettings.hasApiKey}
+        syncedAt={payload?.syncedAt ?? null}
+        {oldestRun}
+        {latestRun}
+        {syncBusy}
+        {syncStopping}
+        {syncProgressPercent}
+        activityCount={payload?.activityCount ?? 0}
+        on:savekey={(event) => saveApiKey(event.detail.apiKey)}
+        on:update={() => syncController.runIncremental(false)}
+        on:stopsync={syncController.requestStopSync}
+        on:clearactivities={() => {
+          if (
+            window.confirm(
+              "Delete all activities and synced charts? Your saved API key will be kept.",
+            )
+          ) {
+            void runReset("clear-activities");
+          }
+        }}
+        on:deleteall={() => {
+          if (
+            window.confirm(
+              "Delete all data, including your saved API key? This cannot be undone.",
+            )
+          ) {
+            void runReset("delete-all");
+          }
+        }}
+      />
+    </div>
+  {/if}
+
   <button
     type="button"
     class="mobile-panel-backdrop"
@@ -644,7 +690,6 @@
         activityCount={payload?.activityCount ?? 0}
         on:savekey={(event) => saveApiKey(event.detail.apiKey)}
         on:update={() => syncController.runIncremental(false)}
-        on:fetchall={syncController.runFetchAll}
         on:stopsync={syncController.requestStopSync}
         on:clearactivities={() => {
           if (

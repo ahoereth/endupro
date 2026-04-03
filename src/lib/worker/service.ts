@@ -18,6 +18,7 @@ import {
   normalizeSettings,
   resolveRunningHrZoneConfiguration,
   shouldForceRefreshActivityOnUpdate,
+  shuffleActivitiesForUpdate,
   safeNumber,
 } from "$lib/domain/edupro-core.js";
 import { db, type ActivityRecord, type SyncMetaRecord } from "$lib/worker/db";
@@ -459,6 +460,10 @@ export class EduproWorkerService {
         activities = mergeActivitiesById(
           previousActivities,
           fetchedActivities,
+        ) as ActivityRecord[];
+        activities = shuffleActivitiesForUpdate(
+          activities,
+          currentMeta.syncedAt,
         ) as ActivityRecord[];
       } else {
         fetchedActivities = (await fetchIntervalsActivitiesInRange(

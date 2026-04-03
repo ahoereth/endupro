@@ -5,7 +5,7 @@
   "description": "Browser-only endurance dashboard powered by Intervals.icu",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "vite dev",

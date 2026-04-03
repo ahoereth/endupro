@@ -47,9 +47,20 @@
       <button type="submit" disabled={!canSaveApiKey}>Save Key</button>
     </div>
     <p class="field-hint">
-      {hasApiKey
-        ? "API key stored locally in browser storage."
-        : "No API key saved yet."}
+      {#if hasApiKey}
+        API key stored locally in browser storage.
+      {:else}
+        No API key saved yet. Get one from Intervals.icu's
+        <a
+          href="https://intervals.icu/features/open-api/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open API docs
+        </a>. All data is retrieved from intervals.icu and stored only in your
+        browser locally. The application does not send any data to its own
+        servers.
+      {/if}
     </p>
   </form>
 
@@ -103,47 +114,43 @@
     </div>
   {/if}
 
-  <div class="row compact connection-actions">
-    <button
-      type="button"
-      disabled={syncBusy}
-      on:click={() => dispatch("fetchall")}
-      >{activityCount > 0 ? "Hard Reload Data" : "Fetch All"}</button
-    >
-    <button
-      type="button"
-      disabled={syncBusy}
-      on:click={() => dispatch("update")}>Update</button
-    >
-  </div>
-  {#if syncBusy}
+  {#if hasApiKey}
     <div class="row compact connection-actions">
       <button
         type="button"
-        class="secondary-button"
-        disabled={syncStopping}
-        on:click={() => dispatch("stopsync")}
+        disabled={syncBusy}
+        on:click={() => dispatch("update")}>Update</button
       >
-        {syncStopping ? "Stopping..." : "Pause Sync"}
+    </div>
+    {#if syncBusy}
+      <div class="row compact connection-actions">
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={syncStopping}
+          on:click={() => dispatch("stopsync")}
+        >
+          {syncStopping ? "Stopping..." : "Pause Sync"}
+        </button>
+      </div>
+    {/if}
+    <div class="row compact data-reset-actions">
+      <button
+        type="button"
+        class="secondary-button"
+        disabled={syncBusy}
+        on:click={() => dispatch("clearactivities")}
+      >
+        Clear Activities
+      </button>
+      <button
+        type="button"
+        class="secondary-button danger-button"
+        disabled={syncBusy}
+        on:click={() => dispatch("deleteall")}
+      >
+        Delete All Data
       </button>
     </div>
   {/if}
-  <div class="row compact data-reset-actions">
-    <button
-      type="button"
-      class="secondary-button"
-      disabled={syncBusy}
-      on:click={() => dispatch("clearactivities")}
-    >
-      Clear Activities
-    </button>
-    <button
-      type="button"
-      class="secondary-button danger-button"
-      disabled={syncBusy}
-      on:click={() => dispatch("deleteall")}
-    >
-      Delete All Data
-    </button>
-  </div>
 </section>

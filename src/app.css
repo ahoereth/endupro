@@ -275,6 +275,10 @@ body.has-mobile-panel-open {
   pointer-events: none;
 }
 
+.mobile-connection-panel {
+  display: none;
+}
+
 .card {
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -1910,22 +1914,13 @@ svg {
       minmax(96px, 0.9fr) minmax(96px, 0.9fr);
   }
 
-  .row.connection-actions,
-  .row.api-key-row,
   .connection-actions,
-  .data-reset-actions,
-  .api-key-row,
   .comparable-controls,
   .heatmap-controls,
   .activity-drawer-header .row.compact {
     flex-wrap: wrap;
   }
 
-  .connection-actions button,
-  .connection-actions select,
-  .data-reset-actions button,
-  .api-key-row button,
-  .api-key-row input:not([type="range"]):not([type="checkbox"]),
   .comparable-controls > button,
   .comparable-controls > select,
   .heatmap-controls > select {
@@ -1935,15 +1930,6 @@ svg {
 
   .mini-label {
     white-space: normal;
-  }
-
-  .activity-item-top {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .activity-detail-trigger {
-    width: 100%;
   }
 
   .color-scale-labels {
@@ -2010,12 +1996,18 @@ svg {
     pointer-events: auto;
   }
 
+  .mobile-connection-panel {
+    display: block;
+    margin-bottom: 16px;
+  }
+
   .left-column {
     position: fixed;
     top: 0;
     left: 0;
     bottom: 0;
-    width: min(88vw, 360px);
+    width: 360px;
+    max-width: calc(100vw - 24px);
     padding: 14px 12px 18px;
     overflow-y: auto;
     background: linear-gradient(

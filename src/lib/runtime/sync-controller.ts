@@ -175,7 +175,7 @@ export function createSyncController(deps: SyncControllerDeps) {
       deps.persistSyncPaused(false);
       deps.applyState({
         syncPaused: false,
-        status: `${auto ? "Auto-update" : "Update"} complete. Fetched ${result.fetchedCount} activities (${result.count} total)${
+        status: `${auto ? "Auto-update" : "Update"} complete. Fetched ${result.fetchedCount} activities${
           result.browserBlocked
             ? " | Browser CORS blocked detail enrichment, so interval/split/detail streams may be limited."
             : ""
@@ -254,7 +254,7 @@ export function createSyncController(deps: SyncControllerDeps) {
         deps.persistSyncPaused(true);
         deps.applyState({
           syncPaused: true,
-          status: `${hadExistingActivities ? "Hard reload" : "Fetch all"} paused. Partial progress was kept locally. Resume with Update or restart with Hard Reload Data.`,
+          status: `${hadExistingActivities ? "Reload" : "Fetch all"} paused. Partial progress was kept locally. Resume with Update.`,
         });
         return null;
       }
