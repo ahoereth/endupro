@@ -5,9 +5,10 @@ env:
 
 on:
   pull_request:
-    branches: ["main"]
+    branches: ["**"]
   push:
-    branches: ["main"]
+    branches: ["**"]
+  workflow_dispatch:
 
 jobs:
   validate:
@@ -24,3 +25,32 @@ jobs:
       - run: npm run check
       - run: npm run test
       - run: npm run build
+
+  deploy:
+    needs: validate
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/configure-pages@v5
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build
+      - id: deployment
+        uses: actions/deploy-pages@v4
