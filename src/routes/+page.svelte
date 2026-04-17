@@ -672,14 +672,26 @@
         <h1 class="hero-logo">endupro</h1>
         <p>Track and analyse enduracnce training progress fully locally.</p>
       </div>
-      <button
-        type="button"
-        class="mobile-chrome-button"
-        aria-expanded={mobileMenuOpen}
-        on:click={() => (mobileMenuOpen = !mobileMenuOpen)}
-      >
-        Menu
-      </button>
+      <div class="mobile-chrome-buttons">
+        <button
+          type="button"
+          class="mobile-chrome-button"
+          aria-expanded={mobileMenuOpen}
+          on:click={() => (mobileMenuOpen = !mobileMenuOpen)}
+        >
+          Menu
+        </button>
+        {#if summarySettings.hasApiKey}
+          <button
+            type="button"
+            class="mobile-chrome-button"
+            disabled={syncBusy}
+            on:click={() => syncController.runIncremental(false)}
+          >
+            Update
+          </button>
+        {/if}
+      </div>
     </div>
   </header>
 

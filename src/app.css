@@ -259,6 +259,7 @@ body.has-mobile-panel-open {
 }
 
 .mobile-chrome-button,
+.mobile-chrome-buttons,
 .mobile-left-drawer-header {
   display: none;
 }
@@ -2023,6 +2024,12 @@ svg {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .mobile-chrome-buttons {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
   .mobile-chrome-button {
     display: inline-flex;
     align-items: center;
@@ -2161,8 +2168,12 @@ svg {
     flex-wrap: wrap;
   }
 
-  .mobile-chrome-button {
+  .mobile-chrome-buttons {
     width: 100%;
+  }
+
+  .mobile-chrome-buttons .mobile-chrome-button {
+    flex: 1;
   }
 
   .color-scale-labels {
