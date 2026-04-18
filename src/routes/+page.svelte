@@ -98,7 +98,6 @@
   let selectionAnchorId: string | null = null;
   let startIndex: number | null = null;
   let endIndex: number | null = null;
-  let showRampCapLine = true;
   let visibleLines = initialPreferences.visibleLines;
   let selectedOnlyEnabled = initialPreferences.selectedOnlyEnabled;
   let comparableEnabled = initialPreferences.comparableEnabled;
@@ -169,7 +168,6 @@
     endIndex = null;
     detail = null;
     activeDetailId = null;
-    showRampCapLine = true;
     visibleLines = resetPreferences.visibleLines;
     selectedOnlyEnabled = resetPreferences.selectedOnlyEnabled;
     comparableEnabled = resetPreferences.comparableEnabled;
@@ -795,11 +793,9 @@
         series={visibleSeries}
         {selectedDateKeys}
         {visibleLines}
-        {showRampCapLine}
         runs={runsInRange}
         on:legendchange={(event) => {
           visibleLines = event.detail.visibleLines;
-          showRampCapLine = event.detail.showRampCapLine;
           persistVisibleLines(visibleLines);
         }}
         on:openrun={(event) =>
