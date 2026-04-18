@@ -18,6 +18,12 @@
     chart.on("legendselectchanged", (params) => {
       dispatch("legendselectchanged", params);
     });
+    chart.on("mousemove", (params) => {
+      dispatch("mousemove", params);
+    });
+    chart.on("mouseout", (params) => {
+      dispatch("mouseout", params);
+    });
     chart.setOption(option, true);
 
     resizeObserver = new ResizeObserver(() => {

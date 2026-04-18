@@ -14,6 +14,8 @@
   const dispatch = createEventDispatcher();
   const rampCapLabel90 = "90+10%";
   const rampCapLabel30 = "30+10%";
+
+  let hoveredDateIndex: number | null = null;
   const lineMeta = [
     { key: "sum7", label: "7 day sum", color: "#0ea5e9" },
     { key: "sum7ma90", label: "90d avg of 7d sum", color: "#4338ca" },
@@ -139,6 +141,33 @@
     lineStyle: { color: "#f97316", width: 2 },
   }));
 
+  $: hoverMarkLines = (() => {
+    if (hoveredDateIndex === null) return [];
+    const hoveredDate = xDates[hoveredDateIndex];
+    if (!hoveredDate) return [];
+
+    const lines = [
+      {
+        xAxis: hoveredDate,
+        lineStyle: { color: "#bfd7d0", width: 1, type: "dashed" },
+      },
+    ];
+
+    // Add second line 30 days back if chart shows more than 30 days
+    if (xDates.length > 30 && hoveredDateIndex >= 30) {
+      const thirtyDaysBackIndex = hoveredDateIndex - 30;
+      const thirtyDaysBackDate = xDates[thirtyDaysBackIndex];
+      if (thirtyDaysBackDate) {
+        lines.push({
+          xAxis: thirtyDaysBackDate,
+          lineStyle: { color: "#a4cac3", width: 1, type: "dotted" },
+        });
+      }
+    }
+
+    return lines;
+  })();
+
   $: chartOption = {
     animation: false,
     grid: { left: 0, right: 0, top: 30, bottom: 100, containLabel: true },
@@ -214,13 +243,13 @@
         data: runBarData,
       },
       ...lineSeries.map((line, index) =>
-        index === 0 && selectionLines.length
+        index === 0 && (selectionLines.length || hoverMarkLines.length)
           ? {
               ...line,
               markLine: {
                 silent: true,
                 symbol: "none",
-                data: selectionLines,
+                data: [...selectionLines, ...hoverMarkLines],
               },
             }
           : line,
@@ -252,6 +281,21 @@
       rampCap30Visible,
     });
   }
+
+  function handleMouseMove(event: CustomEvent) {
+    const params = event.detail;
+    if (
+      params?.type === "mousemove" &&
+      params.componentSubType === "category"
+    ) {
+      // Find the data index for the hovered x-axis value
+      hoveredDateIndex = xDates.indexOf(params.axisValue);
+    }
+  }
+
+  function handleMouseOut() {
+    hoveredDateIndex = null;
+  }
 </script>
 
 <section class="card chart">
@@ -270,6 +314,8 @@
       height="360px"
       on:chartclick={handleChartClick}
       on:legendselectchanged={handleLegendSelectChanged}
+      on:mousemove={handleMouseMove}
+      on:mouseout={handleMouseOut}
     />
   {:else}
     <div class="chart-empty">No synced runs yet.</div>
