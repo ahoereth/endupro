@@ -7,11 +7,11 @@
   export let series: RollingSeriesPoint[] = [];
   export let selectedDateKeys: string[] = [];
   export let visibleLines: string[] = ["sum7", "sum7ma90", "toleranceKmModel"];
-  export let showRampCapLine = true;
   export let runs: RunSummary[] = [];
 
   const dispatch = createEventDispatcher();
-  const rampCapLabel = "+10% cap";
+  const rampCapLabel90 = "90+10%";
+  const rampCapLabel30 = "30+10%";
   const lineMeta = [
     { key: "sum7", label: "7 day sum", color: "#0ea5e9" },
     { key: "sum7ma90", label: "90d avg of 7d sum", color: "#4338ca" },
@@ -28,6 +28,14 @@
     return Number.isFinite(Number(value))
       ? `${Number(value).toFixed(2)} km`
       : "";
+  }
+
+  function formatDateWithWeekday(dateKey: string): string {
+    const [year, month, day] = dateKey.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const weekday = weekdays[(date.getUTCDay() + 6) % 7];
+    return `${dateKey} (${weekday})`;
   }
 
   function formatMonthTick(dateKey: string) {
@@ -50,7 +58,8 @@
   $: xDates = series.map((point) => point.date);
   $: legendSelected = Object.fromEntries([
     ...lineMeta.map((line) => [line.label, visibleLines.includes(line.key)]),
-    [rampCapLabel, showRampCapLine],
+    [rampCapLabel90, true],
+    [rampCapLabel30, true],
   ]);
   $: runBarData = xDates.map((date) => {
     const runsOnDate = runs.filter((run) => String(run.date) === String(date));
@@ -89,7 +98,7 @@
   }));
   $: rampCapSeries = [
     {
-      name: rampCapLabel,
+      name: rampCapLabel90,
       type: "line",
       symbol: "none",
       color: rampCapColor,
@@ -105,6 +114,23 @@
         return Number.isFinite(baseline) ? baseline * 1.1 : null;
       }),
     },
+    {
+      name: rampCapLabel30,
+      type: "line",
+      symbol: "none",
+      color: "#ec4899",
+      lineStyle: { color: "#ec4899", width: 1.5, type: "dashed" },
+      itemStyle: { color: "#ec4899" },
+      emphasis: { disabled: true },
+      z: 2,
+      tooltip: {
+        valueFormatter: (value: number) => formatTooltipKm(value),
+      },
+      data: series.map((point) => {
+        const baseline = Number(point?.sum7ma30);
+        return Number.isFinite(baseline) ? baseline * 1.1 : null;
+      }),
+    },
   ];
   $: selectionLines = selectedDateKeys.map((dateKey) => ({
     xAxis: dateKey,
@@ -117,7 +143,11 @@
     legend: {
       bottom: 0,
       selected: legendSelected,
-      data: [...lineMeta.map((line) => line.label), rampCapLabel],
+      data: [
+        ...lineMeta.map((line) => line.label),
+        rampCapLabel90,
+        rampCapLabel30,
+      ],
       textStyle: {
         color: "#26413c",
       },
@@ -127,6 +157,18 @@
       axisPointer: {
         type: "line",
         snap: true,
+      },
+      formatter: (params: any) => {
+        if (!Array.isArray(params) || params.length === 0) return "";
+        const dateKey = params[0].axisValue;
+        const dateWithWeekday = formatDateWithWeekday(dateKey);
+        const lines = [dateWithWeekday];
+        for (const param of params) {
+          if (param.value !== null && param.value !== undefined) {
+            lines.push(`${param.seriesName}: ${formatTooltipKm(param.value)}`);
+          }
+        }
+        return lines.join("<br/>");
       },
     },
     xAxis: {
@@ -198,7 +240,6 @@
       visibleLines: lineMeta
         .filter((line) => selected[line.label] !== false)
         .map((line) => line.key),
-      showRampCapLine: selected[rampCapLabel] !== false,
     });
   }
 </script>
