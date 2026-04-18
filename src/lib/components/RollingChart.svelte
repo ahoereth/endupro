@@ -254,11 +254,7 @@
             }
           : line,
       ),
-      ...rampCapSeries.filter(
-        (line) =>
-          (line.name === rampCapLabel90 && rampCap90Visible) ||
-          (line.name === rampCapLabel30 && rampCap30Visible),
-      ),
+      ...rampCapSeries,
     ],
   };
 
