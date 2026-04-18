@@ -28,6 +28,7 @@ const STORAGE_KEYS = {
   heatmapColorRange: "edupro_heatmap_color_range",
   heatmapOrientation: "edupro_heatmap_orientation",
   syncPaused: "edupro_sync_paused",
+  fundamentalsCollapsed: "edupro_fundamentals_collapsed",
 } as const;
 
 export const LOCAL_UI_STORAGE_KEYS = [
@@ -39,6 +40,7 @@ export const LOCAL_UI_STORAGE_KEYS = [
   STORAGE_KEYS.heatmapColorRange,
   STORAGE_KEYS.heatmapOrientation,
   STORAGE_KEYS.syncPaused,
+  STORAGE_KEYS.fundamentalsCollapsed,
 ];
 
 function readJson(key: string) {
@@ -160,6 +162,17 @@ export function persistSyncPaused(syncPaused: boolean) {
     localStorage.setItem(STORAGE_KEYS.syncPaused, "true");
   } else {
     localStorage.removeItem(STORAGE_KEYS.syncPaused);
+  }
+}
+
+export function persistFundamentalsCollapsed(collapsed: boolean) {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  if (collapsed) {
+    localStorage.setItem(STORAGE_KEYS.fundamentalsCollapsed, "true");
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.fundamentalsCollapsed);
   }
 }
 
