@@ -99,6 +99,8 @@
   let startIndex: number | null = null;
   let endIndex: number | null = null;
   let visibleLines = initialPreferences.visibleLines;
+  let rampCap90Visible = true;
+  let rampCap30Visible = true;
   let selectedOnlyEnabled = initialPreferences.selectedOnlyEnabled;
   let comparableEnabled = initialPreferences.comparableEnabled;
   let comparableStrictness = initialPreferences.comparableStrictness;
@@ -169,6 +171,8 @@
     detail = null;
     activeDetailId = null;
     visibleLines = resetPreferences.visibleLines;
+    rampCap90Visible = true;
+    rampCap30Visible = true;
     selectedOnlyEnabled = resetPreferences.selectedOnlyEnabled;
     comparableEnabled = resetPreferences.comparableEnabled;
     comparableStrictness = resetPreferences.comparableStrictness;
@@ -793,9 +797,13 @@
         series={visibleSeries}
         {selectedDateKeys}
         {visibleLines}
+        {rampCap90Visible}
+        {rampCap30Visible}
         runs={runsInRange}
         on:legendchange={(event) => {
           visibleLines = event.detail.visibleLines;
+          rampCap90Visible = event.detail.rampCap90Visible;
+          rampCap30Visible = event.detail.rampCap30Visible;
           persistVisibleLines(visibleLines);
         }}
         on:openrun={(event) =>

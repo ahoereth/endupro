@@ -7,6 +7,8 @@
   export let series: RollingSeriesPoint[] = [];
   export let selectedDateKeys: string[] = [];
   export let visibleLines: string[] = ["sum7", "sum7ma90", "toleranceKmModel"];
+  export let rampCap90Visible = true;
+  export let rampCap30Visible = true;
   export let runs: RunSummary[] = [];
 
   const dispatch = createEventDispatcher();
@@ -58,8 +60,8 @@
   $: xDates = series.map((point) => point.date);
   $: legendSelected = Object.fromEntries([
     ...lineMeta.map((line) => [line.label, visibleLines.includes(line.key)]),
-    [rampCapLabel90, true],
-    [rampCapLabel30, true],
+    [rampCapLabel90, rampCap90Visible],
+    [rampCapLabel30, rampCap30Visible],
   ]);
   $: runBarData = xDates.map((date) => {
     const runsOnDate = runs.filter((run) => String(run.date) === String(date));
@@ -223,7 +225,11 @@
             }
           : line,
       ),
-      ...rampCapSeries,
+      ...rampCapSeries.filter(
+        (line) =>
+          (line.name === rampCapLabel90 && rampCap90Visible) ||
+          (line.name === rampCapLabel30 && rampCap30Visible),
+      ),
     ],
   };
 
@@ -236,10 +242,14 @@
 
   function handleLegendSelectChanged(event: CustomEvent) {
     const selected = event.detail?.selected ?? {};
+    rampCap90Visible = selected[rampCapLabel90] !== false;
+    rampCap30Visible = selected[rampCapLabel30] !== false;
     dispatch("legendchange", {
       visibleLines: lineMeta
         .filter((line) => selected[line.label] !== false)
         .map((line) => line.key),
+      rampCap90Visible,
+      rampCap30Visible,
     });
   }
 </script>

@@ -6,6 +6,10 @@
       90-day baseline and +10% cap.
     </li>
     <li>
+      <strong>Monotony</strong> shows how repetitive the recent training load is;
+      lower is better, higher means the load is more repetitive.
+    </li>
+    <li>
       <strong>Fundamentals</strong> summarizes distribution patterns in distance,
       pace, duration, weekday, start time, and heart-rate zones.
     </li>
