@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import EChart from "$lib/components/EChart.svelte";
+  import { isoWeekStartKey } from "$lib/domain/shared";
   import { formatDateLabel } from "$lib/domain/view";
   import type { RollingSeriesPoint, RunSummary } from "$lib/types/app";
 
@@ -19,10 +20,10 @@
   const dispatch = createEventDispatcher();
   const rampCapLabel90 = "90+10%";
   const rampCapLabel30 = "30+10%";
+  const weeklyLabel = "weekly";
 
   let hoveredDateIndex: number | null = null;
   const lineMeta = [
-    { key: "weekly", label: "weekly", color: "#0f172a" },
     { key: "sum7", label: "7 day sum", color: "#0ea5e9" },
     { key: "sum7ma30", label: "30d avg of 7d sum", color: "#1d4ed8" },
     { key: "sum7ma90", label: "90d avg of 7d sum", color: "#4338ca" },
@@ -40,12 +41,27 @@
       : "";
   }
 
+  function runNamesForDate(dateKey: string): string[] {
+    return runs
+      .filter((run) => String(run?.date || "") === String(dateKey))
+      .map((run) => String(run?.name || "").trim())
+      .filter((name) => name.length > 0);
+  }
+
   function formatDateWithWeekday(dateKey: string): string {
     const [year, month, day] = dateKey.split("-").map(Number);
     const date = new Date(Date.UTC(year, month - 1, day));
-    const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const weekdays = [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+      "Sunday",
+    ];
     const weekday = weekdays[(date.getUTCDay() + 6) % 7];
-    return `${dateKey} (${weekday})`;
+    return `${dateKey} ${weekday}`;
   }
 
   function formatMonthTick(dateKey: string) {
@@ -67,6 +83,7 @@
 
   $: xDates = series.map((point) => point.date);
   $: legendSelected = Object.fromEntries([
+    [weeklyLabel, visibleLines.includes("weekly")],
     ...lineMeta.map((line) => [line.label, visibleLines.includes(line.key)]),
     [rampCapLabel90, rampCap90Visible],
     [rampCapLabel30, rampCap30Visible],
@@ -142,27 +159,42 @@
       }),
     },
   ];
-  $: weeklySeries = [
-    {
-      name: "weekly",
-      type: "line",
-      smooth: false,
-      symbol: "none",
-      color: "#0f172a",
-      lineStyle: { width: 2, color: "#0f172a", type: "dotted" },
-      itemStyle: { color: "#0f172a" },
-      emphasis: { disabled: true },
-      blur: { lineStyle: { opacity: 1 }, itemStyle: { opacity: 1 } },
-      z: 2.5,
-      tooltip: {
-        valueFormatter: (value: number) => formatTooltipKm(value),
-      },
-      data: series.map((point) => {
-        const value = Number(point?.weekly);
-        return Number.isFinite(value) ? value : null;
-      }),
-    },
-  ];
+  $: weeklySeries = (() => {
+    const weekBuckets: Record<string, number[]> = {};
+    for (let index = 0; index < series.length; index += 1) {
+      const weekStart = isoWeekStartKey(series[index]?.date);
+      if (!weekBuckets[weekStart]) {
+        weekBuckets[weekStart] = [];
+      }
+      weekBuckets[weekStart].push(index);
+    }
+
+    return Object.values(weekBuckets).map((indices) => {
+      const data = Array.from({ length: series.length }, () => null);
+      for (const index of indices) {
+        const value = Number(series[index]?.weekly);
+        data[index] = Number.isFinite(value) ? value : null;
+      }
+
+      return {
+        name: weeklyLabel,
+        type: "line",
+        smooth: false,
+        symbol: "none",
+        color: "#0f172a",
+        lineStyle: { width: 2, color: "#0f172a", type: "dotted" },
+        itemStyle: { color: "#0f172a" },
+        emphasis: { disabled: true },
+        blur: { lineStyle: { opacity: 1 }, itemStyle: { opacity: 1 } },
+        z: 2.5,
+        tooltip: {
+          valueFormatter: (value: number) => formatTooltipKm(value),
+        },
+        data,
+        connectNulls: false,
+      };
+    });
+  })();
   $: selectionLines = selectedDateKeys.map((dateKey) => ({
     xAxis: dateKey,
     lineStyle: { color: "#f97316", width: 2 },
@@ -194,6 +226,28 @@
 
     return lines;
   })();
+  $: hoverGuideSeries = hoverMarkLines.length
+    ? hoverMarkLines.map((line, index) => ({
+        name: `__hover_guide_${index}__`,
+        type: "line",
+        data: xDates.map(() => null),
+        symbol: "none",
+        smooth: false,
+        lineStyle: { opacity: 0, width: 0 },
+        itemStyle: { opacity: 0 },
+        emphasis: { disabled: true },
+        silent: true,
+        z: 2,
+        tooltip: { show: false },
+        legendHoverLink: false,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          z: 20 + index,
+          data: [line],
+        },
+      }))
+    : [];
 
   $: chartOption = {
     animation: false,
@@ -202,6 +256,7 @@
       bottom: 0,
       selected: legendSelected,
       data: [
+        weeklyLabel,
         ...lineMeta.map((line) => line.label),
         rampCapLabel30,
         rampCapLabel90,
@@ -212,6 +267,16 @@
     },
     tooltip: {
       trigger: "axis",
+      confine: true,
+      backgroundColor: "#f9fcfb",
+      borderColor: "#dbe8e4",
+      borderWidth: 1,
+      padding: [10, 12],
+      textStyle: {
+        color: "#26413c",
+      },
+      extraCssText:
+        "border-radius: 10px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);",
       axisPointer: {
         type: "line",
         snap: true,
@@ -220,11 +285,16 @@
         if (!Array.isArray(params) || params.length === 0) return "";
         const dateKey = params[0].axisValue;
         const dateWithWeekday = formatDateWithWeekday(dateKey);
-        const lines = [dateWithWeekday];
+        const lines = [`<strong>${dateWithWeekday}</strong>`];
         for (const param of params) {
           if (param.value !== null && param.value !== undefined) {
             lines.push(`${param.seriesName}: ${formatTooltipKm(param.value)}`);
           }
+        }
+        const runNames = runNamesForDate(String(dateKey));
+        if (runNames.length) {
+          lines.push("");
+          lines.push(runNames.join("<br/>"));
         }
         return lines.join("<br/>");
       },
@@ -268,21 +338,19 @@
           valueFormatter: (value: number) => formatTooltipKm(value),
         },
         data: runBarData,
-      },
-      ...lineSeries.map((line, index) =>
-        index === 0 && (selectionLines.length || hoverMarkLines.length)
+        markLine: selectionLines.length
           ? {
-              ...line,
-              markLine: {
-                silent: true,
-                symbol: "none",
-                data: [...selectionLines, ...hoverMarkLines],
-              },
+              silent: true,
+              symbol: "none",
+              z: 20,
+              data: selectionLines,
             }
-          : line,
-      ),
+          : undefined,
+      },
+      ...lineSeries,
       ...weeklySeries,
       ...rampCapSeries,
+      ...hoverGuideSeries,
     ],
   };
 
@@ -298,22 +366,51 @@
     rampCap90Visible = selected[rampCapLabel90] !== false;
     rampCap30Visible = selected[rampCapLabel30] !== false;
     dispatch("legendchange", {
-      visibleLines: lineMeta
-        .filter((line) => selected[line.label] !== false)
-        .map((line) => line.key),
+      visibleLines: [
+        ...(selected[weeklyLabel] !== false ? ["weekly"] : []),
+        ...lineMeta
+          .filter((line) => selected[line.label] !== false)
+          .map((line) => line.key),
+      ],
       rampCap90Visible,
       rampCap30Visible,
     });
   }
 
-  function handleMouseMove(event: CustomEvent) {
+  function handleAxisPointerUpdate(event: CustomEvent) {
     const params = event.detail;
+    const axisInfo = Array.isArray(params?.axesInfo)
+      ? params.axesInfo[0]
+      : null;
+    const dataIndex = Number(
+      axisInfo?.dataIndex ?? params?.dataIndex ?? Number.NaN,
+    );
     if (
-      params?.type === "mousemove" &&
-      params.componentSubType === "category"
+      Number.isFinite(dataIndex) &&
+      dataIndex >= 0 &&
+      dataIndex < xDates.length
     ) {
-      // Find the data index for the hovered x-axis value
-      hoveredDateIndex = xDates.indexOf(params.axisValue);
+      hoveredDateIndex = dataIndex;
+      return;
+    }
+
+    const axisValue = axisInfo?.value ?? params?.axisValue ?? null;
+    if (Number.isFinite(Number(axisValue))) {
+      const axisIndex = Number(axisValue);
+      if (axisIndex >= 0 && axisIndex < xDates.length) {
+        hoveredDateIndex = axisIndex;
+        return;
+      }
+    }
+
+    const axisValueLabel =
+      axisInfo?.valueLabel ??
+      axisInfo?.axisValueLabel ??
+      params?.axisValue ??
+      null;
+    if (axisValueLabel !== null && axisValueLabel !== undefined) {
+      const matchedIndex = xDates.indexOf(String(axisValueLabel));
+      hoveredDateIndex = matchedIndex >= 0 ? matchedIndex : null;
     }
   }
 
@@ -338,7 +435,7 @@
       height="360px"
       on:chartclick={handleChartClick}
       on:legendselectchanged={handleLegendSelectChanged}
-      on:mousemove={handleMouseMove}
+      on:axispointerupdate={handleAxisPointerUpdate}
       on:mouseout={handleMouseOut}
     />
   {:else}

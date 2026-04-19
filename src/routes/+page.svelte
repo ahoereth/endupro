@@ -672,7 +672,7 @@
       <div class="hero-copy">
         <div class="hero-kicker">endurance progress tracker</div>
         <h1 class="hero-logo">endupro</h1>
-        <p>Track and analyse enduracnce training progress fully locally.</p>
+        <p>Track and analyse endurance training progress fully locally.</p>
       </div>
       <div class="mobile-chrome-buttons">
         <button

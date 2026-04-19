@@ -36,9 +36,11 @@
     on:click={toggleCollapsed}
     aria-expanded={!isCollapsed}
   >
-    <h2>Fundamentals</h2>
+    <div class="collapsible-title">
+      <h2>Fundamentals</h2>
+      <span class="collapse-icon">{isCollapsed ? "▶" : "▼"}</span>
+    </div>
     <p>{foundations?.summary || ""}</p>
-    <span class="collapse-icon">{isCollapsed ? "▶" : "▼"}</span>
   </button>
 
   {#if !isCollapsed}

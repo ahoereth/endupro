@@ -749,11 +749,17 @@ button:disabled {
   opacity: 0.8;
 }
 
+.collapsible-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collapsible-title h2 {
+  margin: 0;
+}
+
 .collapse-icon {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
   font-size: 0.8rem;
   user-select: none;
 }
