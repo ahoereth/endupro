@@ -41,6 +41,7 @@ function makeSeries(days: number): RollingSeriesPoint[] {
       date: `2026-03-${day}`,
       dayKm: index,
       sum7: index,
+      weekly: index,
       sum7ma30: index,
       sum7ma90: index,
       toleranceKmModel: index,

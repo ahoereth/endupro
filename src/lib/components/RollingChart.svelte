@@ -6,7 +6,12 @@
 
   export let series: RollingSeriesPoint[] = [];
   export let selectedDateKeys: string[] = [];
-  export let visibleLines: string[] = ["sum7", "sum7ma90", "toleranceKmModel"];
+  export let visibleLines: string[] = [
+    "weekly",
+    "sum7",
+    "sum7ma90",
+    "toleranceKmModel",
+  ];
   export let rampCap90Visible = true;
   export let rampCap30Visible = true;
   export let runs: RunSummary[] = [];
@@ -17,9 +22,10 @@
 
   let hoveredDateIndex: number | null = null;
   const lineMeta = [
+    { key: "weekly", label: "weekly", color: "#0f172a" },
     { key: "sum7", label: "7 day sum", color: "#0ea5e9" },
-    { key: "sum7ma90", label: "90d avg of 7d sum", color: "#4338ca" },
     { key: "sum7ma30", label: "30d avg of 7d sum", color: "#1d4ed8" },
+    { key: "sum7ma90", label: "90d avg of 7d sum", color: "#4338ca" },
     { key: "toleranceKmModel", label: "Tolerance km", color: "#0f766e" },
     { key: "sum14", label: "14 day sum", color: "#16a34a" },
     { key: "sum30", label: "30 day sum", color: "#f97316" },
@@ -102,6 +108,23 @@
   }));
   $: rampCapSeries = [
     {
+      name: rampCapLabel30,
+      type: "line",
+      symbol: "none",
+      color: "#ec4899",
+      lineStyle: { color: "#ec4899", width: 1.5, type: "dashed" },
+      itemStyle: { color: "#ec4899" },
+      emphasis: { disabled: true },
+      z: 2,
+      tooltip: {
+        valueFormatter: (value: number) => formatTooltipKm(value),
+      },
+      data: series.map((point) => {
+        const baseline = Number(point?.sum7ma30);
+        return Number.isFinite(baseline) ? baseline * 1.1 : null;
+      }),
+    },
+    {
       name: rampCapLabel90,
       type: "line",
       symbol: "none",
@@ -118,21 +141,25 @@
         return Number.isFinite(baseline) ? baseline * 1.1 : null;
       }),
     },
+  ];
+  $: weeklySeries = [
     {
-      name: rampCapLabel30,
+      name: "weekly",
       type: "line",
+      smooth: false,
       symbol: "none",
-      color: "#ec4899",
-      lineStyle: { color: "#ec4899", width: 1.5, type: "dashed" },
-      itemStyle: { color: "#ec4899" },
+      color: "#0f172a",
+      lineStyle: { width: 2, color: "#0f172a", type: "dotted" },
+      itemStyle: { color: "#0f172a" },
       emphasis: { disabled: true },
-      z: 2,
+      blur: { lineStyle: { opacity: 1 }, itemStyle: { opacity: 1 } },
+      z: 2.5,
       tooltip: {
         valueFormatter: (value: number) => formatTooltipKm(value),
       },
       data: series.map((point) => {
-        const baseline = Number(point?.sum7ma30);
-        return Number.isFinite(baseline) ? baseline * 1.1 : null;
+        const value = Number(point?.weekly);
+        return Number.isFinite(value) ? value : null;
       }),
     },
   ];
@@ -176,8 +203,8 @@
       selected: legendSelected,
       data: [
         ...lineMeta.map((line) => line.label),
-        rampCapLabel90,
         rampCapLabel30,
+        rampCapLabel90,
       ],
       textStyle: {
         color: "#26413c",
@@ -254,6 +281,7 @@
             }
           : line,
       ),
+      ...weeklySeries,
       ...rampCapSeries,
     ],
   };

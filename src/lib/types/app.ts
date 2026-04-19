@@ -30,6 +30,7 @@ export type RollingSeriesPoint = {
   date: string;
   dayKm: number;
   sum7: number;
+  weekly: number;
   sum7ma30: number;
   sum7ma90: number;
   toleranceKmModel: number | null;

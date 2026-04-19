@@ -87,6 +87,7 @@ function computeRollingSeries(activities, daysToShow = 365) {
       date: dates[i],
       dayKm: Number(totals[i].toFixed(3)),
       sum7,
+      weekly: 0,
       sum7ma30: rollingAverageFromSeries(sum7Series, localIdx, 30),
       sum7ma90: rollingAverageFromSeries(sum7Series, localIdx, 90),
       toleranceKmModel: null,
@@ -117,6 +118,12 @@ function computeRollingSeries(activities, daysToShow = 365) {
   const orderedWeeks = Array.from(weekBuckets.values()).sort((a, b) =>
     a.start.localeCompare(b.start),
   );
+  for (const bucket of orderedWeeks) {
+    const weeklyTotal = Number(bucket.km.toFixed(3));
+    for (const index of bucket.indices) {
+      series[index].weekly = weeklyTotal;
+    }
+  }
   const LONG_WINDOW_WEEKS = 26;
   const RECENT_WINDOW_WEEKS = 4;
   const WEIGHT_LONG = 0.8;

@@ -17,7 +17,12 @@ export type UiPreferences = {
   syncPaused: boolean;
 };
 
-export const DEFAULT_VISIBLE_LINES = ["sum7", "sum7ma90", "toleranceKmModel"];
+export const DEFAULT_VISIBLE_LINES = [
+  "sum7",
+  "weekly",
+  "sum7ma90",
+  "toleranceKmModel",
+];
 
 const STORAGE_KEYS = {
   visibleLines: "edupro_visible_lines",
