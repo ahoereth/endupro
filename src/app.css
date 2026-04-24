@@ -924,21 +924,12 @@ button:disabled {
 }
 
 .tolerance-load-cap {
-  display: grid;
-  gap: 2px;
   margin: 0;
 }
 
-.tolerance-load-cap-label {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 .tolerance-load-cap strong {
-  font-size: 1.35rem;
-  line-height: 1.15;
+  font-size: 0.9rem;
+  line-height: 1.4;
 }
 
 .tolerance-load-cap.status-green {

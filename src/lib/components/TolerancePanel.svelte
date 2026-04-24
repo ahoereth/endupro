@@ -14,8 +14,15 @@
 
   let showMonotonyTooltip = false;
 
-  $: status = computeToleranceStatus(latest);
-  $: baseline = Number(latest?.sum7ma90);
+  $: status = computeToleranceStatus(
+    latest
+      ? {
+          ...latest,
+          sum7ma90: latest.sum7ma30,
+        }
+      : null,
+  );
+  $: baseline = Number(latest?.sum7ma30);
   $: current = Number(latest?.sum7);
   $: capBaseline30 = Number(latest?.sum7ma30);
   $: cap = Number.isFinite(capBaseline30) ? capBaseline30 * 1.1 : null;
@@ -45,19 +52,16 @@
     <span class={`tolerance-badge ${status.tone}`}>{status.badge}</span>
   </div>
   <p class={`tolerance-load-cap ${status.tone}`}>
-    <span class="tolerance-load-cap-label">7d load vs cap</span>
     <strong>{formatDistance(current)} / {formatDistance(cap)}</strong>
   </p>
-  <p class="tolerance-message">
-    Cap used here: 30d avg {formatDistance(capBaseline30)} + 10%.
-  </p>
+  <p class="tolerance-message">7d load vs 30d avg + 10% cap</p>
   <p class="tolerance-metrics">
     Delta vs baseline: {formatPercent(deltaPct)} · Headroom vs cap: {formatSignedDistance(
       Number.isFinite(cap) && Number.isFinite(current) ? cap - current : null,
     )}
   </p>
   <p class="tolerance-baseline-indicator">
-    90d baseline: {formatDistance(baseline)}
+    30d baseline: {formatDistance(baseline)} · +10% cap: {formatDistance(cap)}
   </p>
   {#if monotony}
     <div class="monotony-viz">
