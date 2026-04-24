@@ -81,6 +81,26 @@
     return current !== previous;
   }
 
+  function hoverLineLabelConfig(dateKey: string, index: number) {
+    const edgeThreshold = 3;
+    const isNearLeftEdge = index <= edgeThreshold;
+    const isNearRightEdge = index >= xDates.length - 1 - edgeThreshold;
+
+    return {
+      show: true,
+      formatter: () => dateKey,
+      position: "end",
+      color: "#26413c",
+      backgroundColor: "rgba(249, 252, 251, 0.96)",
+      borderColor: "#dbe8e4",
+      borderWidth: 1,
+      padding: [4, 6],
+      borderRadius: 6,
+      offset: isNearLeftEdge ? [8, 0] : isNearRightEdge ? [-8, 0] : [0, 0],
+      align: isNearLeftEdge ? "left" : isNearRightEdge ? "right" : "center",
+    };
+  }
+
   $: xDates = series.map((point) => point.date);
   $: legendSelected = Object.fromEntries([
     [weeklyLabel, visibleLines.includes("weekly")],
@@ -209,6 +229,7 @@
       {
         xAxis: hoveredDate,
         lineStyle: { color: "#bfd7d0", width: 1, type: "dashed" },
+        label: hoverLineLabelConfig(hoveredDate, hoveredDateIndex),
       },
     ];
 
@@ -220,6 +241,7 @@
         lines.push({
           xAxis: thirtyDaysBackDate,
           lineStyle: { color: "#a4cac3", width: 1, type: "dotted" },
+          label: hoverLineLabelConfig(thirtyDaysBackDate, thirtyDaysBackIndex),
         });
       }
     }
@@ -318,7 +340,7 @@
       type: "value",
       name: "Distance (km)",
       nameLocation: "end",
-      nameGap: 10,
+      nameGap: 20,
       nameRotate: 0,
       nameTextStyle: {
         padding: [0, 0, 0, 30],

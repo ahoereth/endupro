@@ -923,27 +923,45 @@ button:disabled {
   line-height: 1.4;
 }
 
-.tolerance-baseline-indicator {
+.tolerance-load-cap {
+  display: grid;
+  gap: 2px;
   margin: 0;
-  font-size: 0.9rem;
-  line-height: 1.35;
-  font-weight: 700;
 }
 
-.tolerance-baseline-indicator.status-green {
+.tolerance-load-cap-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tolerance-load-cap strong {
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+
+.tolerance-load-cap.status-green {
   color: #065f46;
 }
 
-.tolerance-baseline-indicator.status-yellow {
+.tolerance-load-cap.status-yellow {
   color: #92400e;
 }
 
-.tolerance-baseline-indicator.status-red {
+.tolerance-load-cap.status-red {
   color: #991b1b;
 }
 
-.tolerance-baseline-indicator.status-gray {
+.tolerance-load-cap.status-gray {
   color: #475569;
+}
+
+.tolerance-baseline-indicator {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #64748b;
 }
 
 .foundational-stats-panel {
