@@ -273,7 +273,7 @@
 
   $: chartOption = {
     animation: false,
-    grid: { left: 0, right: 0, top: 30, bottom: 100, containLabel: true },
+    grid: { left: 0, right: 0, top: 40, bottom: 100, containLabel: true },
     legend: {
       bottom: 0,
       selected: legendSelected,
